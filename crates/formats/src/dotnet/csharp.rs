@@ -950,7 +950,11 @@ fn is_qualified_type(s: &str) -> bool {
 fn conversion_targets_match(want: &str, got: &str) -> bool {
     let want_qualified = norm_type_qualified(want);
     let got_qualified = norm_type_qualified(got);
-    if is_qualified_type(&want_qualified) && is_qualified_type(&got_qualified) { want_qualified == got_qualified } else { norm_type(want) == norm_type(got) }
+    if is_qualified_type(&want_qualified) && is_qualified_type(&got_qualified) {
+        want_qualified == got_qualified
+    } else {
+        norm_type(&want.replace('/', ".")) == norm_type(&got.replace('/', "."))
+    }
 }
 
 /// Normalise a metadata type name (`Ns.Outer/Inner`1`) to the dotted form without arity.
@@ -1403,6 +1407,19 @@ public class Container {
         c.methods[0].return_type = "A.Outer/Inner".into();
         let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
         let s = scan("class C { public static implicit operator A.Outer.Inner(C c) => null; }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn a_short_nested_conversion_target_matches_metadata_separators() {
+        let mut c = ty("C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "C".into() }];
+        c.methods[0].return_type = "N.Outer/Inner".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("class C { public static implicit operator Inner(C c) => null; }");
         let r = reconcile(&members, &s);
         assert!(r.missing.is_empty(), "{:?}", r.missing);
         assert!(r.extra.is_empty(), "{:?}", r.extra);
