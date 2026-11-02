@@ -853,35 +853,27 @@ pub fn scan(src: &str) -> CsScan {
 /// Simplify a type for comparison: drop namespaces, map system type names to C# keywords, remove
 /// spaces.
 pub fn norm_type(s: &str) -> String {
+    norm_type_impl(s, false)
+}
+
+/// Simplify a type for comparison but keep namespaces, so `A.Result` and `B.Result` stay distinct.
+/// `global::` is dropped and metadata's nested-type separator becomes a dot, so a qualified source
+/// name matches the metadata name.
+fn norm_type_qualified(s: &str) -> String {
+    norm_type_impl(&s.replace("global::", "").replace('/', "."), true)
+}
+
+fn norm_type_impl(s: &str, keep_namespace: bool) -> String {
     let mut out = String::new();
     let mut word = String::new();
     let flush = |word: &mut String, out: &mut String| {
         if !word.is_empty() {
-            let last = word.rsplit('.').next().unwrap_or(word).to_string();
-            let last = last.split('`').next().unwrap_or("").to_string();
-            let mapped = match last.as_str() {
-                "Void" => "void",
-                "Boolean" => "bool",
-                "Char" => "char",
-                "SByte" => "sbyte",
-                "Byte" => "byte",
-                "Int16" => "short",
-                "UInt16" => "ushort",
-                "Int32" => "int",
-                "UInt32" => "uint",
-                "Int64" => "long",
-                "UInt64" => "ulong",
-                "Single" => "float",
-                "Double" => "double",
-                "String" => "string",
-                "Object" => "object",
-                "IntPtr" => "nint",
-                "UIntPtr" => "nuint",
-                "Decimal" => "decimal",
-                "dynamic" => "object",
-                other => other,
-            };
-            out.push_str(mapped);
+            let name = strip_arity(word);
+            let simple = name.rsplit('.').next().unwrap_or(&name);
+            let alias = cs_alias(simple);
+            // A built-in keeps its C# keyword in both modes; other names keep the namespace only
+            // when asked, so `A.Result` and `B.Result` stay distinct.
+            out.push_str(alias.unwrap_or(if keep_namespace { name.as_str() } else { simple }));
             word.clear();
         }
     };
@@ -901,6 +893,64 @@ pub fn norm_type(s: &str) -> String {
     flush(&mut word, &mut out);
     // `ref` and `out` both decode to a by-reference type.
     out.replace("ref", "ref ").replace("ref  ", "ref ")
+}
+
+/// The C# keyword for a CLR built-in type name, if it has one.
+fn cs_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Void" => "void",
+        "Boolean" => "bool",
+        "Char" => "char",
+        "SByte" => "sbyte",
+        "Byte" => "byte",
+        "Int16" => "short",
+        "UInt16" => "ushort",
+        "Int32" => "int",
+        "UInt32" => "uint",
+        "Int64" => "long",
+        "UInt64" => "ulong",
+        "Single" => "float",
+        "Double" => "double",
+        "String" => "string",
+        "Object" => "object",
+        "IntPtr" => "nint",
+        "UIntPtr" => "nuint",
+        "Decimal" => "decimal",
+        "dynamic" => "object",
+        _ => return None,
+    })
+}
+
+/// Remove generic-arity markers (`` `1 ``) from a metadata type name.
+fn strip_arity(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut skip_digits = false;
+    for c in s.chars() {
+        if c == '`' {
+            skip_digits = true;
+        } else if skip_digits && c.is_ascii_digit() {
+            // Part of the arity marker.
+        } else {
+            skip_digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// True when the outermost type is written with a namespace, so that namespace is part of its
+/// identity. Generic arguments and suffixes don't count.
+fn is_qualified_type(s: &str) -> bool {
+    s.split(['<', '[', '?', '*']).next().unwrap_or(s).contains('.')
+}
+
+/// Compare conversion targets. When both sides name a namespace, compare the qualified names so
+/// `A.Result` and `B.Result` stay distinct; otherwise fall back to the namespace-blind form,
+/// because the source may use short names brought in by `using`.
+fn conversion_targets_match(want: &str, got: &str) -> bool {
+    let want_qualified = norm_type_qualified(want);
+    let got_qualified = norm_type_qualified(got);
+    if is_qualified_type(&want_qualified) && is_qualified_type(&got_qualified) { want_qualified == got_qualified } else { norm_type(want) == norm_type(got) }
 }
 
 /// Normalise a metadata type name (`Ns.Outer/Inner`1`) to the dotted form without arity.
@@ -1012,8 +1062,8 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
             let want: Vec<String> = params.iter().map(|p| norm_type(p)).collect();
             // A conversion's target type is part of its identity: two op_Implicit methods can
             // share their parameters and differ only in the type they convert to.
-            let want_ret = matches!(name, "op_Implicit" | "op_Explicit" | "op_CheckedExplicit").then(|| norm_type(ret));
-            let same_ret = |s: &CsMember| want_ret.as_ref().is_none_or(|want| norm_type(&s.ty) == *want);
+            let want_ret = matches!(name, "op_Implicit" | "op_Explicit" | "op_CheckedExplicit").then_some(ret);
+            let same_ret = |s: &CsMember| want_ret.is_none_or(|want| conversion_targets_match(want, &s.ty));
             if let Some((i, s)) =
                 cands.iter().find(|(i, s)| !used.contains(i) && same_ret(s) && s.params.iter().map(|p| norm_type(p)).collect::<Vec<_>>() == want)
             {
@@ -1322,6 +1372,67 @@ public class Container {
         // The int conversion matches the int declaration (line 4), not the first op_Implicit.
         assert_eq!(r.matched[1].line, Some(4), "{:?}", r.matched[1]);
         assert_eq!(r.matched[2].line, Some(3), "{:?}", r.matched[2]);
+    }
+
+    #[test]
+    fn conversion_targets_in_different_namespaces_are_distinct() {
+        let mut c = ty("C", "class", &["op_Implicit", "op_Implicit"], &[]);
+        for m in &mut c.methods {
+            m.params = vec![Param { name: "c".into(), ty: "C".into() }];
+        }
+        c.methods[0].return_type = "A.Result".into();
+        c.methods[1].return_type = "B.Result".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 2, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan(
+            "class C {
+                public static implicit operator B.Result(C c) => null;
+                public static implicit operator A.Result(C c) => null;
+            }",
+        );
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        let lines: Vec<Option<u32>> = r.matched.iter().map(|m| m.line).collect();
+        assert_eq!(lines, vec![Some(3), Some(2)], "A.Result must not match B.Result: {:?}", r.matched);
+    }
+
+    #[test]
+    fn a_nested_conversion_target_matches_metadata_separators() {
+        let mut c = ty("C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "C".into() }];
+        c.methods[0].return_type = "A.Outer/Inner".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("class C { public static implicit operator A.Outer.Inner(C c) => null; }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn qualified_generic_conversion_targets_alias_builtin_arguments() {
+        let mut c = ty("C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "C".into() }];
+        c.methods[0].return_type = "System.Collections.Generic.List<System.Int32>".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("class C { public static implicit operator System.Collections.Generic.List<int>(C c) => null; }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn a_short_conversion_target_matches_the_qualified_metadata_name() {
+        let mut c = ty("C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "C".into() }];
+        c.methods[0].return_type = "A.Result".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("class C { public static implicit operator Result(C c) => null; }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
     }
 
     #[test]
