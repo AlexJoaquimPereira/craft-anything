@@ -166,7 +166,7 @@ pub fn read_document(text: &str, allow_shorthand: bool) -> Option<Document> {
                 }
                 '#' => {
                     for (_, d) in chars.by_ref() {
-                        if d == '\n' {
+                        if d == '\n' || d == '\r' {
                             break;
                         }
                     }
@@ -442,6 +442,8 @@ mod tests {
         assert!(!may_be_document("# note\nconst a = { b: 1 }"));
         assert!(!may_be_document("# only a comment"));
         assert!(!may_be_document("# query Q { a }"), "no newline means the whole text is the comment");
+        let doc = read_document("query Q { a # note\r b }", false).expect("a comment in a selection set ends at a lone CR");
+        assert_eq!(doc.operations.first().and_then(|o| o.name.as_deref()), Some("Q"));
     }
 
     #[test]

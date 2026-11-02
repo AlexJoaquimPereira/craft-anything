@@ -345,6 +345,13 @@ fn graphql_documents_that_begin_with_a_comment() {
 }
 
 #[test]
+fn graphql_comment_inside_a_selection_set() {
+    // A comment may sit between fields, and a lone CR ends it as a newline does.
+    let l = ops(r##"const q="query Feed{items # note\r id}";"##);
+    assert!(has(&l, "graphql", "query", "Feed"), "{l:?}");
+}
+
+#[test]
 fn graphql_spreads_and_computed_values_mean_unknown() {
     let l = ops(r#"var d={...base,kind:"OperationDefinition",operation:"query",name:{value:"Hidden"}};"#);
     assert_eq!(unknowns(&l), 1, "{l:?}");
