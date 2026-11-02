@@ -329,6 +329,10 @@ fn graphql_documents_that_begin_with_a_comment() {
     assert!(has(&l, "graphql", "query", "Feed"), "{l:?}");
     let l = ops("const q=`# Client document\nquery Feed{items{id}}`;");
     assert!(has(&l, "graphql", "query", "Feed"), "{l:?}");
+    // A lone CR ends a comment in GraphQL, as a CRLF does. A string escape keeps the CR; a
+    // template literal would normalize it to LF.
+    let l = ops(r##"const q="# Client document\rquery Feed{items{id}}";"##);
+    assert!(has(&l, "graphql", "query", "Feed"), "{l:?}");
     // A template with run-time text goes through the other call site.
     let l = ops("const q=`# Client document\nquery Feed{items{id}} ${x}`;");
     assert!(has(&l, "graphql", "query", "Feed"), "{l:?}");

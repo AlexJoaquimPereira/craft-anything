@@ -60,7 +60,7 @@ pub fn read_document(text: &str, allow_shorthand: bool) -> Option<Document> {
                 chars.next();
             } else if c == '#' {
                 for (_, c) in chars.by_ref() {
-                    if c == '\n' {
+                    if c == '\n' || c == '\r' {
                         break;
                     }
                 }
@@ -223,7 +223,7 @@ fn document_start(text: &str) -> &str {
     loop {
         let trimmed = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',' || c == '\u{feff}');
         let Some(after) = trimmed.strip_prefix('#') else { return trimmed };
-        rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        rest = after.find(['\n', '\r']).and_then(|i| after.get(i + 1..)).unwrap_or("");
     }
 }
 
@@ -436,6 +436,8 @@ mod tests {
         assert!(may_be_document("# note\nquery Q { a }"));
         assert!(may_be_document("  # one\n# two\nmutation M { a }"));
         assert!(may_be_document("# note\r\nquery Q { a }"));
+        assert!(may_be_document("# note\rquery Q { a }"), "a lone CR ends a comment too");
+        assert_eq!(read_document("# note\rquery Q { a }", false).and_then(|d| d.operations.first().and_then(|o| o.name.clone())).as_deref(), Some("Q"));
         assert!(may_be_document("\u{feff}# c\n, query Q { a }"));
         assert!(!may_be_document("# note\nconst a = { b: 1 }"));
         assert!(!may_be_document("# only a comment"));
