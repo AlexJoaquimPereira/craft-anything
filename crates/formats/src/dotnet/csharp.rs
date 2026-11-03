@@ -938,9 +938,10 @@ fn strip_arity(s: &str) -> String {
     out
 }
 
-/// The last segment of a normalized type name.
+/// The outermost type name of a normalized type, ignoring generic arguments and suffixes.
 fn terminal_name(s: &str) -> &str {
-    s.rsplit('.').next().unwrap_or(s)
+    let head = s.split(['<', '[', '?', '*']).next().unwrap_or(s);
+    head.rsplit('.').next().unwrap_or(head)
 }
 
 /// True when the outermost type is written with a namespace, so that namespace is part of its
@@ -951,13 +952,18 @@ fn is_qualified_type(s: &str) -> bool {
 
 /// Compare conversion targets. A source name is resolved against the declaring type, its enclosing
 /// types and its namespace, so `Outer.Inner` in `N.C` matches metadata `N.Outer/Inner`. A qualified
-/// source name that does not resolve is never equated by its last segment; a short name is compared
-/// by its normalized form only when no other same-arity conversion target shares that last segment.
-fn conversion_targets_match(want: &str, got: &str, declaring: &str, targets: &[(&str, usize)], arity: usize) -> bool {
+/// source name that does not resolve is never equated by its last segment. The fallback for a short
+/// name is best-effort: the scanner does not track `using` directives, so a unique same-kind,
+/// same-arity target with the same terminal name is accepted; distinct targets are never conflated.
+fn conversion_targets_match(want: &str, got: &str, declaring: &str, targets: &[(&str, &str, usize)], op_name: &str, arity: usize) -> bool {
     let want_qualified = norm_type_qualified(want);
     let got_qualified = norm_type_qualified(got);
     if want_qualified == got_qualified {
         return true;
+    }
+    // `global::` is absolute: never expand it against the declaring scope or its terminal name.
+    if got.trim_start().starts_with("global::") {
+        return false;
     }
     let mut scope = declaring;
     loop {
@@ -975,13 +981,13 @@ fn conversion_targets_match(want: &str, got: &str, declaring: &str, targets: &[(
     let want_terminal = terminal_name(&want_qualified);
     let mut same_terminal: Vec<String> = targets
         .iter()
-        .filter(|(_, params)| *params == arity)
-        .map(|(target, _)| norm_type_qualified(target))
+        .filter(|(name, _, params)| *name == op_name && *params == arity)
+        .map(|(_, target, _)| norm_type_qualified(target))
         .filter(|target| terminal_name(target) == want_terminal)
         .collect();
     same_terminal.sort();
     same_terminal.dedup();
-    same_terminal.len() == 1 && norm_type(&got.replace('/', ".")) == norm_type(&want.replace('/', "."))
+    same_terminal.len() == 1 && norm_type(&got.replace("global::", "").replace('/', ".")) == norm_type(&want.replace("global::", "").replace('/', "."))
 }
 
 /// Normalise a metadata type name (`Ns.Outer/Inner`1`) to the dotted form without arity.
@@ -1078,11 +1084,11 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
             r.missing_types.push(ty.full_name.clone());
         }
         let props: BTreeSet<&str> = ty.properties.iter().map(|p| p.name.as_str()).chain(ty.events.iter().map(|e| e.name.as_str())).collect();
-        let conversion_targets: Vec<(&str, usize)> = ty
+        let conversion_targets: Vec<(&str, &str, usize)> = ty
             .methods
             .iter()
             .filter(|m| matches!(m.name.as_str(), "op_Implicit" | "op_Explicit" | "op_CheckedExplicit"))
-            .map(|m| (m.return_type.as_str(), m.params.len()))
+            .map(|m| (m.name.as_str(), m.return_type.as_str(), m.params.len()))
             .collect();
         let mut check = |kind: &'static str, name: &str, params: Vec<String>, ret: &str, meta_text: String, token: String, r: &mut Reconciliation| {
             let mm = |source: Option<&CsMember>, reason: Option<String>| MemberMatch {
@@ -1096,11 +1102,12 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
                 reason,
             };
             let cands = src.get(&(tname.clone(), key_name(name).to_string())).cloned().unwrap_or_default();
+            let arity = params.len();
             let want: Vec<String> = params.iter().map(|p| norm_type(p)).collect();
             // A conversion's target type is part of its identity: two op_Implicit methods can
             // share their parameters and differ only in the type they convert to.
             let want_ret = matches!(name, "op_Implicit" | "op_Explicit" | "op_CheckedExplicit").then_some(ret);
-            let same_ret = |s: &CsMember| want_ret.is_none_or(|want| conversion_targets_match(want, &s.ty, &tname, &conversion_targets, s.params.len()));
+            let same_ret = |s: &CsMember| want_ret.is_none_or(|want| conversion_targets_match(want, &s.ty, &tname, &conversion_targets, name, arity));
             if let Some((i, s)) =
                 cands.iter().find(|(i, s)| !used.contains(i) && same_ret(s) && s.params.iter().map(|p| norm_type(p)).collect::<Vec<_>>() == want)
             {
@@ -1526,9 +1533,28 @@ public class Container {
 
     #[test]
     fn a_short_name_does_not_equate_distinct_nested_targets() {
-        let targets = [("N.Other/Inner", 1), ("N.C/Inner", 1)];
-        assert!(conversion_targets_match("N.C/Inner", "Inner", "N.C", &targets, 1));
-        assert!(!conversion_targets_match("N.Other/Inner", "Inner", "N.C", &targets, 1));
+        let targets = [("op_Implicit", "N.Other/Inner", 1), ("op_Implicit", "N.C/Inner", 1)];
+        assert!(conversion_targets_match("N.C/Inner", "Inner", "N.C", &targets, "op_Implicit", 1));
+        assert!(!conversion_targets_match("N.Other/Inner", "Inner", "N.C", &targets, "op_Implicit", 1));
+    }
+
+    #[test]
+    fn conversion_ambiguity_is_per_operator_kind_and_outer_name() {
+        // An op_Explicit target with the same terminal name cannot make an op_Implicit ambiguous.
+        let kinds = [("op_Implicit", "N.Foo", 1), ("op_Explicit", "M.Foo", 1)];
+        assert!(conversion_targets_match("N.Foo", "Foo", "C", &kinds, "op_Implicit", 1));
+        // Generic arguments share a terminal name; the outer names still decide.
+        let generic = [("op_Implicit", "N.Box<Q.Item>", 1), ("op_Implicit", "M.Other<Q.Item>", 1)];
+        assert!(conversion_targets_match("N.Box<Q.Item>", "Box<Q.Item>", "C", &generic, "op_Implicit", 1));
+    }
+
+    #[test]
+    fn a_global_qualified_conversion_target_is_absolute() {
+        let targets = [("op_Implicit", "A.Result", 1), ("op_Implicit", "Result", 1)];
+        assert!(conversion_targets_match("A.Result", "global::A.Result", "N.C", &targets, "op_Implicit", 1));
+        assert!(!conversion_targets_match("N.A.Result", "global::A.Result", "N.C", &targets, "op_Implicit", 1));
+        assert!(conversion_targets_match("Result", "global::Result", "N.C", &targets, "op_Implicit", 1));
+        assert!(!conversion_targets_match("A.Result", "global::Result", "N.C", &targets, "op_Implicit", 1));
     }
 
     #[test]
