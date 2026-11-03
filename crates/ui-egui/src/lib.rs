@@ -1532,7 +1532,9 @@ impl CraftApp {
                 }
             }
             Done::Pictures(files) => self.add_pictures(files),
-            Done::ToAttach(files) => self.attach(files),
+            Done::ToAttach(files) => {
+                self.attach(files);
+            }
             Done::Pasted { project, files } => self.pasted(project, files),
             Done::Attached { root, text, attachments, files } => self.deliver(root, text, attachments, files),
             Done::GameEngines(inv) => self.engines_found(inv),
@@ -1672,7 +1674,9 @@ impl CraftApp {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         let pictures = !dropped.is_empty() && dropped.iter().all(|p| craft_anything_engine::workspace::is_picture(p));
         match self.state.screen {
-            Screen::Project if pictures => self.attach(dropped),
+            Screen::Project if pictures => {
+                self.attach(dropped);
+            }
             Screen::Home if pictures => self.add_pictures(dropped),
             _ => {
                 if let Some(p) = dropped.into_iter().next() {
