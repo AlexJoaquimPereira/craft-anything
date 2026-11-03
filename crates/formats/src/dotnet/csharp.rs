@@ -938,23 +938,50 @@ fn strip_arity(s: &str) -> String {
     out
 }
 
+/// The last segment of a normalized type name.
+fn terminal_name(s: &str) -> &str {
+    s.rsplit('.').next().unwrap_or(s)
+}
+
 /// True when the outermost type is written with a namespace, so that namespace is part of its
 /// identity. Generic arguments and suffixes don't count.
 fn is_qualified_type(s: &str) -> bool {
     s.split(['<', '[', '?', '*']).next().unwrap_or(s).contains('.')
 }
 
-/// Compare conversion targets. When both sides name a namespace, compare the qualified names so
-/// `A.Result` and `B.Result` stay distinct; otherwise fall back to the namespace-blind form,
-/// because the source may use short names brought in by `using`.
-fn conversion_targets_match(want: &str, got: &str) -> bool {
+/// Compare conversion targets. A source name is resolved against the declaring type, its enclosing
+/// types and its namespace, so `Outer.Inner` in `N.C` matches metadata `N.Outer/Inner`. A qualified
+/// source name that does not resolve is never equated by its last segment; a short name is compared
+/// by its normalized form only when no other same-arity conversion target shares that last segment.
+fn conversion_targets_match(want: &str, got: &str, declaring: &str, targets: &[(&str, usize)], arity: usize) -> bool {
     let want_qualified = norm_type_qualified(want);
     let got_qualified = norm_type_qualified(got);
-    if is_qualified_type(&want_qualified) && is_qualified_type(&got_qualified) {
-        want_qualified == got_qualified
-    } else {
-        norm_type(&want.replace('/', ".")) == norm_type(&got.replace('/', "."))
+    if want_qualified == got_qualified {
+        return true;
     }
+    let mut scope = declaring;
+    loop {
+        if format!("{scope}.{got_qualified}") == want_qualified {
+            return true;
+        }
+        match scope.rsplit_once('.') {
+            Some((parent, _)) => scope = parent,
+            None => break,
+        }
+    }
+    if is_qualified_type(&got_qualified) {
+        return false;
+    }
+    let want_terminal = terminal_name(&want_qualified);
+    let mut same_terminal: Vec<String> = targets
+        .iter()
+        .filter(|(_, params)| *params == arity)
+        .map(|(target, _)| norm_type_qualified(target))
+        .filter(|target| terminal_name(target) == want_terminal)
+        .collect();
+    same_terminal.sort();
+    same_terminal.dedup();
+    same_terminal.len() == 1 && norm_type(&got.replace('/', ".")) == norm_type(&want.replace('/', "."))
 }
 
 /// Normalise a metadata type name (`Ns.Outer/Inner`1`) to the dotted form without arity.
@@ -1051,6 +1078,12 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
             r.missing_types.push(ty.full_name.clone());
         }
         let props: BTreeSet<&str> = ty.properties.iter().map(|p| p.name.as_str()).chain(ty.events.iter().map(|e| e.name.as_str())).collect();
+        let conversion_targets: Vec<(&str, usize)> = ty
+            .methods
+            .iter()
+            .filter(|m| matches!(m.name.as_str(), "op_Implicit" | "op_Explicit" | "op_CheckedExplicit"))
+            .map(|m| (m.return_type.as_str(), m.params.len()))
+            .collect();
         let mut check = |kind: &'static str, name: &str, params: Vec<String>, ret: &str, meta_text: String, token: String, r: &mut Reconciliation| {
             let mm = |source: Option<&CsMember>, reason: Option<String>| MemberMatch {
                 kind,
@@ -1067,7 +1100,7 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
             // A conversion's target type is part of its identity: two op_Implicit methods can
             // share their parameters and differ only in the type they convert to.
             let want_ret = matches!(name, "op_Implicit" | "op_Explicit" | "op_CheckedExplicit").then_some(ret);
-            let same_ret = |s: &CsMember| want_ret.is_none_or(|want| conversion_targets_match(want, &s.ty));
+            let same_ret = |s: &CsMember| want_ret.is_none_or(|want| conversion_targets_match(want, &s.ty, &tname, &conversion_targets, s.params.len()));
             if let Some((i, s)) =
                 cands.iter().find(|(i, s)| !used.contains(i) && same_ret(s) && s.params.iter().map(|p| norm_type(p)).collect::<Vec<_>>() == want)
             {
@@ -1450,6 +1483,52 @@ public class Container {
         assert!(r.missing.is_empty(), "{:?}", r.missing);
         assert!(r.extra.is_empty(), "{:?}", r.extra);
         assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn a_namespace_relative_conversion_target_matches() {
+        let mut c = ty("N.C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "N.C".into() }];
+        c.methods[0].return_type = "N.Outer/Inner".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("namespace N { class C { public static implicit operator Outer.Inner(C c) => null; } }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn an_enclosing_type_relative_conversion_target_matches() {
+        let mut c = ty("N.C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "N.C".into() }];
+        c.methods[0].return_type = "N.C/Outer/Inner".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("namespace N { class C { public static implicit operator Outer.Inner(C c) => null; } }");
+        let r = reconcile(&members, &s);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.first().and_then(|m| m.line), Some(1), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn an_unrelated_qualified_conversion_target_does_not_match() {
+        let mut c = ty("N.C", "class", &["op_Implicit"], &[]);
+        c.methods[0].params = vec![Param { name: "c".into(), ty: "N.C".into() }];
+        c.methods[0].return_type = "N.Other/Inner".into();
+        let members = Members { types: vec![c], total_types: 1, total_methods: 1, total_fields: 0, truncated: false, warnings: vec![] };
+        let s = scan("namespace N { class C { public static implicit operator Outer.Inner(C c) => null; } }");
+        let r = reconcile(&members, &s);
+        assert_eq!(r.missing.len(), 1, "{:?}", r.missing);
+        assert_eq!(r.extra.len(), 1, "{:?}", r.extra);
+        assert!(r.matched.is_empty(), "{:?}", r.matched);
+    }
+
+    #[test]
+    fn a_short_name_does_not_equate_distinct_nested_targets() {
+        let targets = [("N.Other/Inner", 1), ("N.C/Inner", 1)];
+        assert!(conversion_targets_match("N.C/Inner", "Inner", "N.C", &targets, 1));
+        assert!(!conversion_targets_match("N.Other/Inner", "Inner", "N.C", &targets, 1));
     }
 
     #[test]
