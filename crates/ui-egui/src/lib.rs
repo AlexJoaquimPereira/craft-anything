@@ -191,6 +191,14 @@ pub enum Done {
     Pasted {
         project: Option<PathBuf>,
         files: Vec<PathBuf>,
+        /// The first picture over 20 MB, if any (checked on the worker that read the paste).
+        refused: Option<String>,
+    },
+    /// Picture sizes were checked on a worker, before the UI attaches them.
+    PicturesChecked {
+        files: Vec<PathBuf>,
+        refused: Option<String>,
+        target: crate::project::PictureTarget,
     },
     /// The game engines on this computer were listed.
     GameEngines(craft_anything_engines::game::Inventory),
@@ -1532,10 +1540,9 @@ impl CraftApp {
                 }
             }
             Done::Pictures(files) => self.add_pictures(files),
-            Done::ToAttach(files) => {
-                self.attach(files);
-            }
-            Done::Pasted { project, files } => self.pasted(project, files),
+            Done::ToAttach(files) => self.attach(files),
+            Done::Pasted { project, files, refused } => self.pasted(project, files, refused),
+            Done::PicturesChecked { files, refused, target } => self.pictures_checked(files, refused, target),
             Done::Attached { root, text, attachments, files } => self.deliver(root, text, attachments, files),
             Done::GameEngines(inv) => self.engines_found(inv),
             Done::GameFound { path, found } => {
@@ -1674,9 +1681,7 @@ impl CraftApp {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         let pictures = !dropped.is_empty() && dropped.iter().all(|p| craft_anything_engine::workspace::is_picture(p));
         match self.state.screen {
-            Screen::Project if pictures => {
-                self.attach(dropped);
-            }
+            Screen::Project if pictures => self.attach(dropped),
             Screen::Home if pictures => self.add_pictures(dropped),
             _ => {
                 if let Some(p) = dropped.into_iter().next() {

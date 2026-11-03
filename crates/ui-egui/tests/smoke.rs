@@ -406,8 +406,7 @@ fn the_prompt_box_sends_on_enter_with_its_pictures() {
     });
     h.run_steps(3);
     h.state_mut().attach(vec![pic.clone(), d.path().join("notes.txt"), pic]);
-    h.run_steps(2);
-    assert_eq!(h.state().state.project_attachments.len(), 1, "pictures only, once each");
+    assert!(wait(&mut h, |a| a.state.project_attachments.len() == 1), "pictures only, once each: {:?}", h.state().state.project_attachments);
     h.get_by_label("shot.png");
     h.get_by_label("Ask for a change").focus();
     h.run_steps(2);
@@ -453,9 +452,8 @@ fn an_oversized_picture_is_refused_when_attached() {
     });
     h.run_steps(3);
     h.state_mut().attach(vec![small, big]);
-    h.run_steps(2);
+    assert!(wait(&mut h, |a| a.state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB"))), "{:?}", h.state().state.toasts);
     assert!(h.state().state.project_attachments.is_empty(), "the valid picture is not half-attached");
-    assert!(h.state().state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB")), "{:?}", h.state().state.toasts);
 }
 
 #[test]
@@ -468,9 +466,8 @@ fn an_oversized_picture_is_refused_in_the_make_draft() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(2);
     h.state_mut().add_pictures(vec![small, big]);
-    h.run_steps(1);
+    assert!(wait(&mut h, |a| a.state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB"))), "{:?}", h.state().state.toasts);
     assert!(h.state().state.make.pictures.is_empty(), "the valid picture is not half-added");
-    assert!(h.state().state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB")), "{:?}", h.state().state.toasts);
 }
 
 #[test]
