@@ -343,7 +343,7 @@ impl CraftApp {
     /// Pictures of the original: straight into the open project, else kept with the draft until
     /// Start.
     pub fn add_pictures(&mut self, files: Vec<PathBuf>) {
-        if files.is_empty() {
+        if files.is_empty() || self.refuse_oversized_pictures(&files) {
             return;
         }
         if self.state.screen == Screen::Project
@@ -359,6 +359,20 @@ impl CraftApp {
                 d.push(f);
             }
         }
+    }
+
+    /// Refuse pictures over 20 MB before they are attached, as a paste does. Returns true when the
+    /// whole add was refused.
+    fn refuse_oversized_pictures(&mut self, files: &[PathBuf]) -> bool {
+        let Some(name) = files
+            .iter()
+            .find(|f| craft_anything_engine::workspace::picture_too_large(f))
+            .map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.display().to_string()))
+        else {
+            return false;
+        };
+        self.toast(trf("{name} can't be attached: a message takes pictures up to 20 MB.", &[("name", &name)]), true);
+        true
     }
 
     pub(crate) fn pictures_added(&mut self, added: Result<usize, String>) {
@@ -1697,6 +1711,9 @@ pub struct Draft {
 impl CraftApp {
     /// Pictures for the next message on the open project (pictures only, once each).
     pub fn attach(&mut self, files: Vec<PathBuf>) {
+        if self.refuse_oversized_pictures(&files) {
+            return;
+        }
         let list = &mut self.state.project_attachments;
         for f in files {
             if craft_anything_engine::workspace::is_picture(&f) && !list.contains(&f) {

@@ -437,6 +437,43 @@ fn the_prompt_box_sends_on_enter_with_its_pictures() {
 }
 
 #[test]
+fn an_oversized_picture_is_refused_when_attached() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let small = d.path().join("ok.png");
+    std::fs::write(&small, b"png").unwrap();
+    let big = d.path().join("huge.png");
+    std::fs::File::create(&big).unwrap().set_len(20 * 1024 * 1024 + 1).unwrap();
+    let ws = Workspace::create(&d.path().join("projects"), "Game", "Recreate this game", TargetRef::None).unwrap();
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.workspace = Some(ws);
+        a.state.screen = Screen::Project;
+        a
+    });
+    h.run_steps(3);
+    h.state_mut().attach(vec![small, big]);
+    h.run_steps(2);
+    assert!(h.state().state.project_attachments.is_empty(), "the valid picture is not half-attached");
+    assert!(h.state().state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB")), "{:?}", h.state().state.toasts);
+}
+
+#[test]
+fn an_oversized_picture_is_refused_in_the_make_draft() {
+    let d = tempfile::tempdir().unwrap();
+    let small = d.path().join("ok.png");
+    std::fs::write(&small, b"png").unwrap();
+    let big = d.path().join("huge.png");
+    std::fs::File::create(&big).unwrap().set_len(20 * 1024 * 1024 + 1).unwrap();
+    let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
+    h.run_steps(2);
+    h.state_mut().add_pictures(vec![small, big]);
+    h.run_steps(1);
+    assert!(h.state().state.make.pictures.is_empty(), "the valid picture is not half-added");
+    assert!(h.state().state.toasts.iter().any(|(t, err)| *err && t.contains("20 MB")), "{:?}", h.state().state.toasts);
+}
+
+#[test]
 fn tab_completes_a_slash_command_and_keeps_focus() {
     use craft_anything_ai::rebuild::StandIns;
     use craft_anything_engine::workspace::{TargetRef, Workspace};
