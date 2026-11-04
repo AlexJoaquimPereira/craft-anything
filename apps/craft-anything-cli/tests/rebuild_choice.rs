@@ -156,9 +156,9 @@ fn an_unknown_backend_is_named_and_does_not_add_an_agent() {
 }
 
 /// A backend the person switched off must not be used just because it was named: refuse it before
-/// a project is made, and say how to turn it on.
+/// a project is made or opened, and say how to turn it on.
 #[test]
-fn a_disabled_backend_is_refused_before_a_project_is_created() {
+fn a_disabled_backend_is_refused_before_a_project_is_opened_or_created() {
     let config = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let bin = tempfile::tempdir().unwrap();
@@ -179,6 +179,19 @@ fn a_disabled_backend_is_refused_before_a_project_is_created() {
     assert!(log.contains("Turn it on"), "the error must say how to fix it:\n{log}");
     assert!(!log.contains("Project:"), "it must stop before a project is made:\n{log}");
     assert!(!project.exists(), "a refused command must not leave a project folder:\n{log}");
+
+    // An existing project is refused before it is opened or a build starts.
+    let existing = tempfile::tempdir().unwrap();
+    let out = cli(
+        &["rebuild", "-", "make a small page", "--continue-in", existing.path().to_str().unwrap(), "--backend", "Off", "--rounds", "0", "--unattended"],
+        config.path(),
+        home.path(),
+        bin.path(),
+    );
+    let log = out.stderr_text();
+    assert!(!out.success, "the switched-off backend must stop an existing project too:\n{log}");
+    assert!(log.contains("Off") && log.contains("turned off"), "the error must name the backend and its state:\n{log}");
+    assert!(!log.contains("craft.json") && !log.contains("Couldn't reach"), "it must stop before opening or building:\n{log}");
 }
 
 /// A command refused before any build starts must not change the person's AI settings either.

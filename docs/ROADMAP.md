@@ -319,10 +319,13 @@ Owner: open · Status: todo
       settings and prints "Using Claude Code (…)": `ensure_agent` (`rebuild_cmd.rs`) runs whenever no
       agent app is set up, though this run won't use one. Run it only when the build needs one
       — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-no-agent-with-api-backend`
-- [ ] `--backend <a name that is turned off or unknown>` is refused with a specific message: a
-      turned-off backend still builds with it (`builder_backend`'s named branch doesn't check
-      `enabled`), and a name that matches nothing says to install a coding agent or add a key
-      — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-disabled-backend-name`
+- [x] `--backend <a name that is turned off or unknown>` is refused with a specific message: a
+      turned-off backend is named and must be turned on, and a name that matches nothing is named
+      instead of saying to install an agent or add a key
+      — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-disabled-backend-name`; commit a380b3e
+- [ ] When a project's saved builder was turned off, Start builds with the default AI without
+      saying so: the UI picker filters the stale name out (`ui-egui/src/builders.rs`) instead of
+      reporting that the chosen AI was replaced
 - [x] Bound accumulated data across all lines of one server-sent event, so short lines cannot
       grow a streamed API response without limit
       — claimed: Afloat16, branch bugfix/r5.5-bounded-sse-events-20261103
