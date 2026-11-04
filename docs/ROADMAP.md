@@ -315,7 +315,7 @@ been run live.
 
 ### R5.5 API-key builds fail in words people can use
 Owner: open · Status: todo
-- [ ] `rebuild --backend <an API backend>` still adds the first agent app it finds to the person's
+- [x] `rebuild --backend <an API backend>` still adds the first agent app it finds to the person's
       settings and prints "Using Claude Code (…)": `ensure_agent` (`rebuild_cmd.rs`) runs whenever no
       agent app is set up, though this run won't use one. Run it only when the build needs one
       — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-no-agent-with-api-backend`
