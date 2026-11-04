@@ -420,6 +420,7 @@ Owner: open · Status: in progress
 Owner: maintainers · Status: in progress
 - [ ] Give Linux-specific Clang guidance in Unreal's guided installer when the bundled compiler
       is missing (the requirements summary is already platform-specific).
+      — claimed: AlexJoaquimPereira, branch `bugfix/r1.6-linux-unreal-clang`
 - [x] Find Visual Studio's C++ tools on Windows when Visual Studio is installed outside Program
       Files (through the Visual Studio Installer's `ProgramData` instance state or developer
       environment variables, #669, [PR #726](https://github.com/storytold/craft-anything/pull/726))
