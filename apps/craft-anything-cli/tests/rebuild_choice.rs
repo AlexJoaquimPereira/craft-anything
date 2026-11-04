@@ -120,7 +120,7 @@ fn a_named_installed_agent_is_added_when_missing() {
     assert!(log.contains("craft.json"), "the run must stop at the missing project, before any build:\n{log}");
     assert!(log.contains("Using Claude Code"), "the named agent must still be registered:\n{log}");
     let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap();
-    assert!(saved.contains("agent_cli"), "the named agent must be saved:\n{saved}");
+    assert!(saved.contains("agent_cli") && saved.contains("name = \"Claude Code\""), "the named agent must be saved:\n{saved}");
 }
 
 /// An unknown name must not add a different agent that happens to be installed.
