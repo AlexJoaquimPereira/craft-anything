@@ -124,7 +124,7 @@ registered installations. The version comes from `Engine/Build/Build.version`, a
 checks for the selected engine's bundled Clang, not an unrelated system compiler or another
 installation's SDK. The Linux requirements summary (`Builder::needs` for Unreal) now describes
 the bundled Clang toolchain. The guided installer now gives Linux-specific guidance: it names the
-bundled Clang and points at the engine's `Build/BatchFiles/Linux/SetupToolchain.sh` (or `Setup.sh`
+bundled Clang and points at the engine's `Engine/Build/BatchFiles/Linux/SetupToolchain.sh` (or `Setup.sh`
 for a source build) when Clang is missing. On macOS, the status line and requirements summary now
 name Xcode, matching the guided step. The guidance strings are unit-tested; no live Unreal
 install or macOS run was performed for this copy change.

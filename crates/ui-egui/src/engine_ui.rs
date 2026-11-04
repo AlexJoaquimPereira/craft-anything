@@ -670,7 +670,7 @@ fn cpp_step(os: &str) -> (&'static str, &'static str, Option<&'static str>) {
     match os {
         "linux" => (
             "Add Unreal's Linux C++ toolchain",
-            "Run Build/BatchFiles/Linux/SetupToolchain.sh in the engine folder to install its bundled Clang toolchain. If you built Unreal from source, Setup.sh downloads the native toolchain instead. A system Clang may not match the engine's version.",
+            "Run Engine/Build/BatchFiles/Linux/SetupToolchain.sh in the engine folder to install its bundled Clang toolchain. If you built Unreal from source, Setup.sh downloads the native toolchain instead. A system Clang may not match the engine's version.",
             None,
         ),
         "macos" => ("Install Xcode", "Unreal builds games with Apple's Xcode, free in the App Store.", None),
@@ -984,7 +984,7 @@ mod tests {
     fn linux_unreal_guidance_names_the_bundled_clang() {
         let (title, detail, page) = cpp_step("linux");
         assert!(title.contains("Linux"));
-        assert!(detail.contains("SetupToolchain.sh"));
+        assert!(detail.contains("Engine/Build/BatchFiles/Linux/SetupToolchain.sh"));
         assert!(detail.contains("bundled Clang"));
         assert!(detail.contains("native toolchain"), "Setup.sh must be described as the source-build path");
         assert!(!detail.contains("Visual Studio"), "Linux must not send people to Visual Studio");
