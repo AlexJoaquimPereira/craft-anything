@@ -38,7 +38,7 @@ pub struct RebuildArgs {
     /// the computer stopped); the request is ignored.
     #[arg(long, requires = "continue_in")]
     pub resume: bool,
-    /// The coding agent to use (a backend name from `ai list`).
+    /// The coding agent to use (a backend name from `ai list`, or an installed agent such as `Claude Code`).
     #[arg(long)]
     pub backend: Option<String>,
     /// Refinement rounds after the first build.
