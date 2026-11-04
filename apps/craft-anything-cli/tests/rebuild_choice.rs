@@ -73,6 +73,8 @@ fn an_api_backend_build_does_not_add_a_coding_agent() {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = cli(&refs, config.path(), home.path(), bin.path());
     let log = out.stderr_text();
+    assert!(!out.success, "the empty project folder must stop the run:\n{log}");
+    assert!(log.contains("craft.json"), "the run must stop at the missing project, before any build:\n{log}");
     assert!(!log.contains("Using "), "a run on the API backend must not pick an agent:\n{log}");
     let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap();
     assert!(!saved.contains("agent_cli"), "no agent app may be saved for a run on an API backend:\n{saved}");
@@ -93,6 +95,8 @@ fn an_enabled_api_backend_is_enough_without_being_named() {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = cli(&refs, config.path(), home.path(), bin.path());
     let log = out.stderr_text();
+    assert!(!out.success, "the empty project folder must stop the run:\n{log}");
+    assert!(log.contains("craft.json"), "the run must stop at the missing project, before any build:\n{log}");
     assert!(!log.contains("Using "), "an enabled API backend must be enough without naming it:\n{log}");
     let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap();
     assert!(!saved.contains("agent_cli"), "no agent app may be saved when an API backend is enabled:\n{saved}");
@@ -114,6 +118,8 @@ fn an_invalid_command_does_not_add_an_agent() {
         bin.path(),
     );
     let log = out.stderr_text();
+    assert!(!out.success, "the refused command must fail:\n{log}");
+    assert!(log.contains("--build-with is for new projects"), "the command must stop at validation:\n{log}");
     assert!(!log.contains("Using "), "a refused command must not pick an agent:\n{log}");
     let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap_or_default();
     assert!(!saved.contains("agent_cli"), "a refused command must not save an agent:\n{saved}");
@@ -132,6 +138,8 @@ fn a_computer_with_no_ai_still_finds_an_agent() {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = cli(&refs, config.path(), home.path(), bin.path());
     let log = out.stderr_text();
+    assert!(!out.success, "the empty project folder must stop the run:\n{log}");
+    assert!(log.contains("craft.json"), "the run must stop at the missing project, before any build:\n{log}");
     assert!(log.contains("Using Claude Code"), "an agent must still be found when no AI is set up:\n{log}");
     let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap();
     assert!(saved.contains("agent_cli"), "the found agent must still be saved:\n{saved}");

@@ -319,6 +319,8 @@ Owner: open · Status: todo
       settings and prints "Using Claude Code (…)": `ensure_agent` (`rebuild_cmd.rs`) runs whenever no
       agent app is set up, though this run won't use one. Run it only when the build needs one
       — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-no-agent-with-api-backend`
+- [ ] `--backend <an unknown or disabled name>` with no enabled AI still finds and saves an agent
+      before the name is refused: check the name before `ensure_agent` runs
 - [x] Bound accumulated data across all lines of one server-sent event, so short lines cannot
       grow a streamed API response without limit
       — claimed: Afloat16, branch bugfix/r5.5-bounded-sse-events-20261103
