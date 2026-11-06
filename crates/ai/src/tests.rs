@@ -169,6 +169,15 @@ fn hub() -> (AiHub, tempfile::TempDir) {
     (h, dir)
 }
 
+/// A hub whose key store never reads the environment, so a test that expects no key is
+/// deterministic even when the machine has the provider's variable set.
+fn hub_without_env() -> (AiHub, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(Engine::new(craft_anything_engine::testing::session()));
+    let h = AiHub::with_stores(engine, dir.path().join("config.toml"), KeyStore::file_only_without_env(dir.path().join("ai-keys.toml")));
+    (h, dir)
+}
+
 /// A named backend stays off for chat, including before API or agent setup can run.
 #[test]
 fn disabled_backends_are_refused_when_chat_starts() {
@@ -406,9 +415,7 @@ fn an_app_bundle_is_refused_as_an_agents_program() {
 #[cfg(unix)]
 fn off_on_and_no_key_backends() -> (AiHub, tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(Engine::new(craft_anything_engine::testing::session()));
-    let h = AiHub::with_stores(engine, dir.path().join("config.toml"), KeyStore::file_only_without_env(dir.path().join("ai-keys.toml")));
+    let (h, dir) = hub_without_env();
     let marker = dir.path().join("ran.txt");
     let program = |name: &str| {
         let p = dir.path().join(name);
@@ -480,7 +487,7 @@ fn a_comparison_does_not_build_the_other_backend_before_rejecting_the_off_one() 
 /// about the choice, not about a key the person may not have.
 #[test]
 fn a_turned_off_api_backend_is_refused_before_its_key() {
-    let (h, _d) = hub();
+    let (h, _d) = hub_without_env();
     let off = BackendConfig {
         name: "Off".into(),
         kind: BackendKind::Openrouter,
