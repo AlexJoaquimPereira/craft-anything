@@ -348,6 +348,20 @@ const READING_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
 const BUILDER_TOOLS: &str = "Bash,PowerShell,Read,Write,Edit,MultiEdit,Glob,Grep,TodoWrite,NotebookEdit";
 const DEEP_BUILDER_TOOLS: &str = "Agent,Bash,PowerShell,Read,Write,Edit,MultiEdit,Glob,Grep,TodoWrite,NotebookEdit";
 
+/// A remote Deep build's `--tools` list without `Agent`: its custom agents are on the other
+/// computer, where the local preflight can't read their permission modes.
+pub(crate) fn without_agent_tools(args: &mut [String]) {
+    // Every `--tools`, including one a saved backend's extra arguments already carry: a single
+    // strip would leave our Agent-bearing list in the remote command.
+    for i in 0..args.len() {
+        if args[i] == "--tools"
+            && let Some(tools) = args.get_mut(i + 1)
+        {
+            *tools = tools.split(',').filter(|tool| *tool != "Agent" && *tool != "Task").collect::<Vec<_>>().join(",");
+        }
+    }
+}
+
 /// Claude Code answering a question about a build: the builder's session copied
 /// (`--fork-session`) and the copy not kept, no tool server, and only Read, Glob and Grep (none in
 /// Clean room).
@@ -429,8 +443,8 @@ fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&st
             }
             let Some(text) = read_agent_file(&path) else { continue };
             let Some(mode) = agent_permission_mode(&text) else { continue };
-            if PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(mode)) {
-                return Some((path, mode.to_string()));
+            if PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(&mode)) {
+                return Some((path, mode));
             }
         }
     }
@@ -449,25 +463,35 @@ fn read_agent_file(path: &std::path::Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// A top-level `permissionMode:` (or `permission-mode:`) in an agent's YAML frontmatter.
-fn agent_permission_mode(text: &str) -> Option<&str> {
+/// A top-level `permissionMode` (or `permission-mode`) in an agent's YAML frontmatter. A real
+/// YAML parser reads quoted keys, whitespace before the colon and comments the same way Claude
+/// Code does; malformed YAML is left to Claude Code and doesn't count as a mode here.
+fn agent_permission_mode(text: &str) -> Option<String> {
+    let yaml = agent_frontmatter(text)?;
+    let docs = yaml_rust2::YamlLoader::load_from_str(&yaml).ok()?;
+    let map = docs.first()?.as_hash()?;
+    ["permissionMode", "permission-mode"].into_iter().find_map(|key| {
+        map.get(&yaml_rust2::Yaml::String(key.to_string()))
+            .and_then(yaml_rust2::Yaml::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// The YAML between the opening and closing `---` lines, with the same boundary rule as before.
+fn agent_frontmatter(text: &str) -> Option<String> {
     let mut lines = text.lines();
     if lines.next()?.trim_start_matches('\u{feff}').trim() != "---" {
         return None;
     }
+    let mut yaml = String::new();
     for line in lines {
-        let line = line.trim();
-        if line == "---" {
-            return None;
+        if line.trim() == "---" {
+            return Some(yaml);
         }
-        for key in ["permissionMode:", "permission-mode:"] {
-            if let Some(value) = line.strip_prefix(key) {
-                let value = value.trim();
-                let value = value.split(" #").next().unwrap_or(value).trim();
-                let value = value.trim_matches(['"', '\'']).trim();
-                return (!value.is_empty()).then_some(value);
-            }
-        }
+        yaml.push_str(line);
+        yaml.push('\n');
     }
     None
 }

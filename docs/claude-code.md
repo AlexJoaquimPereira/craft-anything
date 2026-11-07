@@ -48,7 +48,9 @@ integration does, why it is shaped this way, and what remains to confirm.
   `permissionMode: default` helper keeps the approval path. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check reads `agents/` in the chosen config
-  folder and `.claude/agents/` in the project, on this computer (a remote run isn't checked).
+  folder and `.claude/agents/` in the project. A remote (SSH) Deep build leaves `Agent` out: its
+  custom agents are on the other computer and the local check can't read them, so remote helper
+  agents are a follow-up.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run

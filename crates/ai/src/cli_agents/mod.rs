@@ -910,7 +910,12 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         return nothing_done(&name);
     }
     let access = access_for(spec.builder.is_some(), spec.deep, spec.question);
-    let args = build_args(adapter.as_ref(), &spec.options, text, &preamble, &mcp, if adapter.resumes() { resume.as_deref() } else { None }, access);
+    let mut args = build_args(adapter.as_ref(), &spec.options, text, &preamble, &mcp, if adapter.resumes() { resume.as_deref() } else { None }, access);
+    // A remote Deep build's custom agents are on the other computer, so the local preflight can't
+    // read their permission modes: leave helper agents out rather than open an unchecked path.
+    if remote.is_some() && spec.builder.is_some() && spec.deep {
+        adapters::without_agent_tools(&mut args);
+    }
     let shown = FailureContext::new(&program, &args, text, remote.as_deref(), spec);
     // A builder turn may take hours and sit silent for long stretches: Ghidra's first look at a big
     // game, an engine build, or the person answering a question. Claude Code's own limits are
@@ -1816,8 +1821,8 @@ mod tests {
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
     }
 
-    /// CodeRabbit #1108: a custom subagent whose own `permissionMode` accepts edits would skip our
-    /// approval tool. A Deep build refuses it, naming the file; a `default` helper is allowed.
+    /// #1108: a custom subagent whose own `permissionMode` accepts edits would skip our approval
+    /// tool. A Deep build refuses it, naming the file; a `default` helper is allowed.
     #[test]
     fn a_permissive_custom_subagent_is_refused_before_a_deep_build() {
         let backend =
@@ -1865,6 +1870,47 @@ mod tests {
         // A remote run's agents are on the other computer and aren't read here.
         let remote = BackendConfig { ssh_host: Some("other".into()), ..backend };
         assert!(adapter_for("claude-code").check_subagent_modes(&remote, &options, Some(project.path())).is_ok());
+    }
+
+    /// #1108: the frontmatter is real YAML, so quoted keys and whitespace before the colon mean
+    /// the same as the unquoted form.
+    #[test]
+    fn a_quoted_or_spaced_permission_key_is_read_as_yaml() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        for (name, mode, frontmatter) in [
+            ("quoted.md", "acceptEdits", "---\n\"permissionMode\" : acceptEdits\n---\nBody\n"),
+            ("spaced.md", "bypassPermissions", "---\npermissionMode   : bypassPermissions\n---\nBody\n"),
+            ("hyphen.md", "auto", "---\n'permission-mode' : auto\n---\nBody\n"),
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            let agents = project.path().join(".claude/agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(agents.join(name), frontmatter).unwrap();
+            let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+            assert!(err.message.contains(name) && err.message.contains(mode), "{}", err.message);
+        }
+    }
+
+    /// A remote Deep build's custom agents are on the other computer, so it leaves `Agent` out.
+    #[test]
+    fn a_remote_deep_build_leaves_helper_agents_out() {
+        let mut args = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, Access::Build);
+        let pos = args.iter().position(|x| x == "--tools").unwrap();
+        assert!(args[pos + 1].split(',').any(|tool| tool == "Agent"), "a local Deep build keeps subagents");
+        adapters::without_agent_tools(&mut args);
+        assert!(!args[pos + 1].split(',').any(|tool| tool == "Agent"), "a remote Deep build leaves them out: {}", args[pos + 1]);
+        assert!(args[pos + 1].split(',').any(|tool| tool == "Bash"), "the other builder tools stay: {}", args[pos + 1]);
+        // The older name is removed too, should a later list carry it.
+        let mut both = vec!["--tools".to_string(), "Agent,Task,Bash".to_string()];
+        adapters::without_agent_tools(&mut both);
+        assert_eq!(both[1], "Bash");
+        // A saved backend's own `--tools` comes before ours; every occurrence must be stripped.
+        let mut twice = vec!["--tools".to_string(), "Agent,Read".to_string(), "--tools".to_string(), "Agent,Bash".to_string()];
+        adapters::without_agent_tools(&mut twice);
+        assert_eq!(twice, ["--tools", "Read", "--tools", "Bash"]);
     }
 
     /// #564: in Clean room a chat's reads aren't left to Claude Code's defaults. Its own file, shell
