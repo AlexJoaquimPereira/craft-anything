@@ -1277,7 +1277,9 @@ pub fn project_builder<'a>(cfg: &crate::AiConfig, ws: &'a Workspace) -> Option<&
 /// A project's saved builder that is no longer usable, and the AI that builds in its place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuilderReplacement {
+    /// The AI the project saved, which is off or gone.
     pub saved: String,
+    /// The AI that builds in its place.
     pub used: String,
 }
 
