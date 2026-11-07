@@ -1274,6 +1274,33 @@ pub fn project_builder<'a>(cfg: &crate::AiConfig, ws: &'a Workspace) -> Option<&
     ws.manifest.builder.as_deref().filter(|n| cfg.get(n).is_some_and(|b| b.config.enabled))
 }
 
+/// A project's saved builder that is no longer usable, and the AI that builds in its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderReplacement {
+    pub saved: String,
+    pub used: String,
+}
+
+/// When a project's saved builder is off or gone, who builds instead. An explicitly named backend
+/// is not a replacement: it is refused if unusable, and nothing falls back.
+pub fn builder_replacement(cfg: &crate::AiConfig, ws: &Workspace, explicit: Option<&str>) -> Option<BuilderReplacement> {
+    if explicit.is_some() {
+        return None;
+    }
+    let saved = ws.manifest.builder.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    if project_builder(cfg, ws).is_some() {
+        return None;
+    }
+    let used = builder_backend(cfg, None).ok()?.config.name;
+    (used != saved).then(|| BuilderReplacement { saved: saved.to_string(), used })
+}
+
+/// The words for a saved builder that was turned off or removed and the one building instead.
+/// English for now: the wording needs a native speaker's check before it joins the catalogs.
+pub fn replaced_builder_notice(saved: &str, used: &str) -> String {
+    format!("The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.")
+}
+
 /// The backend that builds: the one named while it is set up and on, else the Builder role's,
 /// else an agent app, else any enabled AI backend (which builds with our own agent loop and the
 /// Build tools).

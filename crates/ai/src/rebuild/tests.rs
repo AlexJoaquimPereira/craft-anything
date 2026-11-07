@@ -3035,6 +3035,61 @@ fn a_project_is_built_by_the_ai_it_was_started_with_while_that_one_is_on() {
     assert_eq!(builder_backend(&cfg, super::project_builder(&cfg, &ws)).unwrap().config.name, "Claude Code");
 }
 
+/// The headless surfaces (CLI, MCP, a question) use the same replacement report as the app.
+#[test]
+fn a_saved_builder_that_is_off_or_gone_is_named_for_headless_starts() {
+    use crate::{AiConfig, BackendConfig, BackendEntry, BackendKind};
+    let d = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    ws.manifest.builder = Some("Codex".into());
+    let mut cfg = AiConfig::default();
+    for (name, enabled) in [("Claude Code", true), ("Codex", true)] {
+        let c = BackendConfig { name: name.into(), kind: BackendKind::AgentCli, model: String::new(), base_url: None, ssh_host: None, enabled };
+        cfg.upsert(BackendEntry { config: c, options: Default::default() });
+    }
+    assert_eq!(super::builder_replacement(&cfg, &ws, None), None, "an enabled saved builder is not a replacement");
+    assert_eq!(super::builder_replacement(&cfg, &ws, Some("Codex")), None, "an explicit name is never a replacement");
+
+    cfg.backends.iter_mut().for_each(|b| b.config.enabled = b.config.name != "Codex");
+    let r = super::builder_replacement(&cfg, &ws, None).expect("a turned-off saved builder is replaced");
+    assert_eq!((r.saved.as_str(), r.used.as_str()), ("Codex", "Claude Code"));
+    let notice = super::replaced_builder_notice(&r.saved, &r.used);
+    assert!(notice.contains("Codex") && notice.contains("Claude Code") && notice.contains("instead"), "{notice}");
+
+    ws.manifest.builder = Some("Gone".into());
+    let r = super::builder_replacement(&cfg, &ws, None).expect("a removed saved builder is replaced");
+    assert_eq!((r.saved.as_str(), r.used.as_str()), ("Gone", "Claude Code"));
+}
+
+/// A question answered by the default AI still says which saved builder it replaced.
+#[cfg(unix)]
+#[test]
+fn a_question_names_a_replaced_saved_builder() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let script = d.path().join("claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"In app/src.\"}]}}'\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let engine = std::sync::Arc::new(Engine::new(craft_anything_engine::testing::session()));
+    let hub = crate::AiHub::with_stores(engine, d.path().join("config.toml"), crate::KeyStore::file_only(d.path().join("keys.toml")));
+    let mut settings = craft_anything_engine::testing::session().settings;
+    settings.ai = toml::from_str(&format!(
+        "[[backends]]\nname = \"Off\"\nkind = \"anthropic\"\nmodel = \"claude-test\"\nenabled = false\n\n[[backends]]\nname = \"Claude\"\nkind = \"agent_cli\"\nmodel = \"claude-code\"\ncommand = \"{}\"\nenabled = true\n",
+        script.display()
+    ))
+    .unwrap();
+    let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    ws.set_person(|m| m.builder = Some("Off".into())).unwrap();
+    let answered = super::question::ask(&hub, &settings, None, &ws, "where is it?", &CancelToken::default()).unwrap();
+    assert_eq!(answered.backend, "Claude");
+    let notice = answered.builder_notice.as_deref().unwrap_or_default();
+    assert!(notice.contains("Off") && notice.contains("Claude"), "{notice}");
+}
+
 /// A name given on purpose is never ignored: a backend that is off is refused in words that say
 /// how to fix it, and a name that matches nothing names the name instead of blaming the setup.
 #[test]

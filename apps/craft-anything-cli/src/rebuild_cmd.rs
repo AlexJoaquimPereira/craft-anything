@@ -130,6 +130,11 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
         }
     };
     println!("Project: {}", ws.root.display());
+    // The saved builder may be off or gone; say who builds before the run starts, so a failure
+    // later doesn't hide the replacement.
+    if let Some(replacement) = rebuild::builder_replacement(&hub.config(), &ws, a.backend.as_deref()) {
+        eprintln!("{}", rebuild::replaced_builder_notice(&replacement.saved, &replacement.used));
+    }
     // A follow-up shows in the project's feed as the person typed it.
     let shown = message.clone();
     let good_enough = engine.session().settings.build.good_enough;

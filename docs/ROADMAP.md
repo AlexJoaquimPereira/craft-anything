@@ -438,9 +438,9 @@ Owner: open · Status: todo
       reporting that the chosen AI was replaced. The Make picker says so in a toast, and every
       start (Start, Continue, a note, Try again) names the saved AI and the one building instead
       — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-stale-builder-notice`
-- [ ] `rebuild --continue-in`, `rebuild_start` on a project and `rebuild_question_ask` still use
-      the default AI when the saved builder is off or gone, and say nothing: report the replacement
-      there too
+- [x] `rebuild --continue-in`, `rebuild_start` on a project and `rebuild_question_ask` name the
+      saved builder that is off or gone and the AI building instead: the CLI prints it before the
+      run, `rebuild_start` adds `builder_notice`, and an answered question carries it
       — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-headless-builder-notice`
 - [ ] The saved-builder replacement notice is English only for now; add it to the catalogs after a
       native speaker checks the wording
