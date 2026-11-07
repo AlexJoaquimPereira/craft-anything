@@ -423,44 +423,101 @@ const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto"];
 
 /// The first custom subagent whose own permission mode would accept edits without asking the
 /// project's approval tool. Claude Code loads agents from `agents/` in its config folder and
-/// `.claude/agents/` in the project.
-fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Option<(std::path::PathBuf, String)> {
-    let mut dirs = Vec::with_capacity(2);
+/// `.claude/agents/` from the project up to its repository root, recursively.
+fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Result<Option<(std::path::PathBuf, String)>, ToolError> {
+    let mut visited = std::collections::HashSet::new();
+    for dir in agent_dirs(config_dir, project) {
+        if let Some(found) = scan_agent_dir(&dir, 0, &mut visited)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+/// The user config's `agents/`, the project's `.claude/agents/`, and every `.claude/agents/`
+/// between the project and its repository root, as Claude Code discovers project subagents.
+fn agent_dirs(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
     if let Some(dir) = config_dir {
         dirs.push(dir.join("agents"));
     }
     if let Some(root) = project {
-        dirs.push(root.join(".claude").join("agents"));
-    }
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        // Scan every entry: skipping an agent would be a bypass. The check runs once per turn, so a
-        // very large agents folder costs one scan, not one per draw.
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md")) {
-                continue;
-            }
-            let Some(text) = read_agent_file(&path) else { continue };
-            let Some(mode) = agent_permission_mode(&text) else { continue };
-            if PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(&mode)) {
-                return Some((path, mode));
+        // Claude Code discovers from its working directory after the OS resolves it; match that
+        // rather than a lexical path that may contain `..` or a symlinked component.
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let repo = root.ancestors().find(|dir| dir.join(".git").exists());
+        let stop = repo.unwrap_or(root.as_path());
+        for dir in root.ancestors() {
+            dirs.push(dir.join(".claude").join("agents"));
+            if dir == stop {
+                break;
             }
         }
     }
-    None
+    dirs
+}
+
+/// One `agents/` directory, its subfolders and their `.md` files. A file or folder that can't be
+/// read fails the check rather than hiding a permissive agent; a symlink loop is visited once.
+fn scan_agent_dir(
+    dir: &std::path::Path,
+    depth: u8,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> Result<Option<(std::path::PathBuf, String)>, ToolError> {
+    if depth > 16 {
+        return Err(ToolError::new(ErrorCode::BadSettings, format!("The custom agent folder {} is nested too deeply to check.", dir.display()))
+            .with_remediation("Flatten the agent folder or remove the nested files, then try again."));
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(agent_read_error(dir, &e)),
+    };
+    if let Ok(canonical) = std::fs::canonicalize(dir)
+        && !visited.insert(canonical)
+    {
+        return Ok(None);
+    }
+    // Scan every entry, including nested folders: skipping one would be a bypass. The check runs
+    // once per turn, so a large agents folder costs one scan, not one per draw.
+    for entry in entries {
+        let entry = entry.map_err(|e| agent_read_error(dir, &e))?;
+        let path = entry.path();
+        let meta = std::fs::metadata(&path).map_err(|e| agent_read_error(&path, &e))?;
+        if meta.is_dir() {
+            if let Some(found) = scan_agent_dir(&path, depth + 1, visited)? {
+                return Ok(Some(found));
+            }
+        } else if meta.is_file() && path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+            let text = read_agent_file(&path)?;
+            if let Some(mode) = agent_permission_mode(&text)
+                && PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(&mode))
+            {
+                return Ok(Some((path, mode)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The file's first [`AGENT_FILE_CAP`] bytes: enough for the frontmatter, and a huge body can't
 /// stall a build. Lossy decoding keeps a character cut at the cap from hiding the frontmatter.
-fn read_agent_file(path: &std::path::Path) -> Option<String> {
+/// `metadata` follows symlinks deliberately, so a linked agent file is checked like any other.
+fn read_agent_file(path: &std::path::Path) -> Result<String, ToolError> {
     use std::io::Read as _;
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
+    let meta = std::fs::metadata(path).map_err(|e| agent_read_error(path, &e))?;
+    if !meta.is_file() {
+        return Ok(String::new());
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(AGENT_FILE_CAP).read_to_end(&mut bytes).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    std::fs::File::open(path).map_err(|e| agent_read_error(path, &e))?.take(AGENT_FILE_CAP).read_to_end(&mut bytes).map_err(|e| agent_read_error(path, &e))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A custom agent file or folder that couldn't be read: fail the check rather than skip it.
+fn agent_read_error(path: &std::path::Path, e: &std::io::Error) -> ToolError {
+    ToolError::new(ErrorCode::BadSettings, format!("Couldn't check the custom agent {}: {e}.", path.display()))
+        .with_remediation("Check that the file and its folders are readable, or remove them, then try again.")
 }
 
 /// A top-level `permissionMode` (or `permission-mode`) in an agent's YAML frontmatter. A real
@@ -521,7 +578,7 @@ impl AgentAdapter for ClaudeCode {
             return Ok(());
         }
         let config_dir = options.config_dir_here().or_else(|| self.config_dir());
-        let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project) else { return Ok(()) };
+        let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project)? else { return Ok(()) };
         Err(ToolError::new(
             ErrorCode::BadSettings,
             format!("Claude Code's custom helper agent {} sets permissionMode: {mode}, so its edits would skip this project's approvals.", path.display()),

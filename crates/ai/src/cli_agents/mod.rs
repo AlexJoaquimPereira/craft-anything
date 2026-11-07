@@ -1872,6 +1872,48 @@ mod tests {
         assert!(adapter_for("claude-code").check_subagent_modes(&remote, &options, Some(project.path())).is_ok());
     }
 
+    /// #1108: Claude Code scans `.claude/agents/` recursively and walks up to the repository root;
+    /// both discovery paths must be checked for a permissive helper.
+    #[test]
+    fn nested_and_ancestor_custom_agents_are_checked() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let nested = tempfile::tempdir().unwrap();
+        let nested_agents = nested.path().join(".claude/agents/review");
+        std::fs::create_dir_all(&nested_agents).unwrap();
+        std::fs::write(nested_agents.join("helper.md"), "---\nname: helper\npermissionMode: acceptEdits\n---\n").unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(nested.path())).unwrap_err();
+        assert!(err.message.contains("helper.md"), "{}", err.message);
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        let ancestor_agents = repo.path().join(".claude/agents");
+        std::fs::create_dir_all(&ancestor_agents).unwrap();
+        std::fs::write(ancestor_agents.join("ancestor.md"), "---\nname: ancestor\npermissionMode: bypassPermissions\n---\n").unwrap();
+        let project = repo.path().join("sub/project");
+        std::fs::create_dir_all(&project).unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(&project)).unwrap_err();
+        assert!(err.message.contains("ancestor.md"), "{}", err.message);
+    }
+
+    /// A broken or unreadable agent file fails the check instead of being skipped.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_custom_agent_file_is_refused() {
+        use std::os::unix::fs::symlink;
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        symlink("missing", agents.join("broken.md")).unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+        assert!(err.message.contains("broken.md"), "{}", err.message);
+    }
+
     /// #1108: the frontmatter is real YAML, so quoted keys and whitespace before the colon mean
     /// the same as the unquoted form.
     #[test]
