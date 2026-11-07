@@ -1832,14 +1832,18 @@ mod tests {
             vec!["--permission-mode".into(), "acceptEdits".into()],
             vec!["--permission-mode=bypassPermissions".into()],
             vec!["--dangerously-skip-permissions".into()],
+            vec!["--permission-prompts".into(), "none".into()],
+            vec!["--permission-prompts=none".into()],
         ] {
             let options = BackendOptions { args, ..Default::default() };
             let err = adapter.check_native_options(&options).unwrap_err();
             assert_eq!(err.code, ErrorCode::BadSettings);
             assert!(err.message.contains("--permission-mode") && err.message.contains("--dangerously-skip-permissions"), "{}", err.message);
         }
-        let ok = BackendOptions { args: vec!["--model".into(), "opus".into()], ..Default::default() };
-        assert!(adapter.check_native_options(&ok).is_ok());
+        for args in [vec!["--model".into(), "opus".into()], vec!["--permission-prompts".into(), "host".into()]] {
+            let options = BackendOptions { args, ..Default::default() };
+            assert!(adapter.check_native_options(&options).is_ok());
+        }
     }
 
     /// #1108: a custom subagent whose own `permissionMode` accepts edits would skip our approval

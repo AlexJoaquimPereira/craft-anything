@@ -36,8 +36,8 @@ integration does, why it is shaped this way, and what remains to confirm.
   own permissions and could change those files another way, so "commands: allow" (Auto mode's
   default) trusts the builder. A build starts Claude Code with `--permission-mode manual` (its
   default mode), so a saved `permissions.defaultMode` can't make the builder or a default helper
-  skip the approval tool. Backend extra arguments that set `--permission-mode` or
-  `--dangerously-skip-permissions` are refused for the same reason.
+  skip the approval tool. Backend extra arguments that set `--permission-mode`,
+  `--dangerously-skip-permissions` or `--permission-prompts none` are refused for the same reason.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
   and hand mechanical work to cheaper helpers. Spawning needs no permission, so it isn't in the
   allow list. Claude Code documents that a subagent can only use the session's own tools and that
