@@ -250,10 +250,10 @@ fn a_computer_with_no_ai_still_finds_an_agent() {
     assert!(saved.contains("agent_cli"), "the found agent must still be saved:\n{saved}");
 }
 
-/// A project whose saved builder was switched off: the run names the saved AI and the one
-/// building instead, before it fails on the dead API URL.
+/// A project whose saved builder was switched off: once the run starts, it names the saved AI
+/// and the one building instead.
 #[test]
-fn a_replaced_saved_builder_is_named_before_the_run_starts() {
+fn a_replaced_saved_builder_is_named_once_the_run_starts() {
     use craft_anything_engine::workspace::{TargetRef, Workspace};
     let config = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -275,7 +275,7 @@ fn a_replaced_saved_builder_is_named_before_the_run_starts() {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = cli(&refs, config.path(), home.path(), bin.path());
     let log = out.stderr_text();
-    assert!(!out.success, "the run must stop without a project to check:\n{log}");
+    assert!(!out.success, "the run must stop at the empty app:\n{log}");
     assert!(log.contains("Off") && log.contains("Claude") && log.contains("instead"), "the saved builder and its replacement must be named:\n{log}");
     assert!(!log.contains("Using "), "a replacement is not an added agent:\n{log}");
 }

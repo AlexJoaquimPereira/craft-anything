@@ -286,6 +286,7 @@ fn rebuild_question_ask(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, 
         deep: settings.deep_mode,
         ..AskedQuestion::new(question.to_string(), answered.answer.clone(), from_session, answered.backend.clone(), answered.cost_usd, after)
     };
+    // The replacement notice is for this caller; the saved question keeps the AI that answered.
     // An answer that couldn't be kept is still the answer.
     let not_kept = questions::add(&ws, asked).err().map(|e| e.message);
     Ok(ToolOutput::Value(json!({"project": ws.root, "question": question, "answered": answered, "not_kept": not_kept})))
