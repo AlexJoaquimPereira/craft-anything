@@ -1970,6 +1970,27 @@ mod tests {
         }
     }
 
+    /// An unquoted description with `Use when: x` may defeat YAML parsing; a column-0 permissive
+    /// mode is still found, while no mode keeps the parse error rather than allowing the file.
+    #[test]
+    fn an_unquoted_description_falls_back_to_a_lenient_permission_scan() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        for (name, frontmatter, why) in [
+            ("no-mode.md", "---\nname: helper\ndescription: Use when: x\n---\n", "valid YAML"),
+            ("mode.md", "---\nname: helper\ndescription: Use when: x\npermissionMode: acceptEdits\n---\n", "acceptEdits"),
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            let agents = project.path().join(".claude/agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(agents.join(name), frontmatter).unwrap();
+            let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+            assert!(err.message.contains(name) && err.message.contains(why), "{}", err.message);
+        }
+    }
+
     /// #1108: the frontmatter is real YAML, so quoted keys and whitespace before the colon mean
     /// the same as the unquoted form.
     #[test]

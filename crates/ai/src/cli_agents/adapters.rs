@@ -560,7 +560,10 @@ fn agent_permission_modes(text: &str) -> Result<Vec<String>, String> {
         if events > MAX_YAML_EVENTS {
             return Err("its frontmatter has too many entries to check".into());
         }
-        let (event, _) = parser.next_token().map_err(|e| format!("its frontmatter isn't valid YAML: {e}"))?;
+        let (event, _) = match parser.next_token() {
+            Ok(event) => event,
+            Err(e) => return lenient_permission_modes(&yaml).ok_or_else(|| format!("its frontmatter isn't valid YAML: {e}")),
+        };
         match event {
             Event::StreamStart | Event::DocumentStart | Event::DocumentEnd | Event::Nothing => {}
             Event::StreamEnd => break,
@@ -604,6 +607,30 @@ fn agent_permission_modes(text: &str) -> Result<Vec<String>, String> {
         }
     }
     Ok(modes)
+}
+
+/// A fallback for frontmatter that isn't valid YAML: read column-0 `permissionMode` lines and
+/// keep only permissive values. `None` keeps the YAML parse error rather than silently allowing
+/// the file.
+fn lenient_permission_modes(yaml: &str) -> Option<Vec<String>> {
+    let mut modes = Vec::new();
+    for line in yaml.lines() {
+        if line.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        for key in ["permissionMode", "permission-mode"] {
+            let Some(rest) = line.strip_prefix(key) else { continue };
+            let rest = rest.trim_start();
+            let Some(value) = rest.strip_prefix(':') else { continue };
+            let value = value.trim();
+            let value = value.split(" #").next().unwrap_or(value).trim();
+            let value = value.trim_matches(['"', '\'']).trim();
+            if !value.is_empty() && PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(value)) {
+                modes.push(value.to_string());
+            }
+        }
+    }
+    (!modes.is_empty()).then_some(modes)
 }
 
 /// The YAML between the opening and closing `---` lines, with the same boundary rule as before.
