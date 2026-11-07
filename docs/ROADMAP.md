@@ -441,6 +441,7 @@ Owner: open · Status: todo
 - [ ] `rebuild --continue-in`, `rebuild_start` on a project and `rebuild_question_ask` still use
       the default AI when the saved builder is off or gone, and say nothing: report the replacement
       there too
+      — claimed: AlexJoaquimPereira, branch `bugfix/r5.5-headless-builder-notice`
 - [ ] The saved-builder replacement notice is English only for now; add it to the catalogs after a
       native speaker checks the wording
 - [x] Bound accumulated data across all lines of one server-sent event, so short lines cannot
