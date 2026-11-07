@@ -105,6 +105,12 @@ fn detail(b: &BackendConfig) -> String {
     }
 }
 
+/// The notice when a project's saved AI was turned off or removed. English for now: the wording
+/// needs a native speaker's check before it joins the catalogs.
+fn replaced_builder_notice(saved: &str, used: &str) -> String {
+    format!("The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.")
+}
+
 impl CraftApp {
     /// Agent apps found on this computer that aren't set up yet (they need no key).
     fn found_agents(&self) -> impl Iterator<Item = &BackendConfig> {
@@ -143,13 +149,7 @@ impl CraftApp {
         // A saved choice that was turned off or removed is replaced, and the person is told:
         // otherwise a build can quietly use an AI they did not choose (and may pay for).
         if let Some(saved) = wanted.filter(|w| !w.is_empty() && kept.is_none() && *w != name.as_str()) {
-            self.toast(
-                trf(
-                    "The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.",
-                    &[("saved", saved), ("used", name.as_str())],
-                ),
-                false,
-            );
+            self.toast(replaced_builder_notice(saved, &name), false);
         }
         let Some(found) = self.found_agents().find(|b| b.name == name).cloned() else { return Some(name) };
         // Saved but switched off (#423): turn it on, keeping its program and folder, rather than
@@ -365,13 +365,7 @@ pub fn built_by(app: &mut CraftApp, ui: &mut Ui) {
     let replaced = app.state.make.ai.clone().filter(|a| !a.is_empty() && !choices.iter().any(|c| &c.name == a));
     if let Some(saved) = &replaced {
         app.state.make.ai = None;
-        app.toast(
-            trf(
-                "The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.",
-                &[("saved", saved.as_str()), ("used", default.as_str())],
-            ),
-            false,
-        );
+        app.toast(replaced_builder_notice(saved, &default), false);
     }
     let automatic = trf("Automatic ({name})", &[("name", &default)]);
     let shown = app.state.make.ai.clone().unwrap_or_else(|| automatic.clone());
