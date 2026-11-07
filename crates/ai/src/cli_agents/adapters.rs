@@ -667,6 +667,19 @@ impl AgentAdapter for ClaudeCode {
         cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
     }
 
+    /// A saved extra argument must not override the manual mode or bypass permissions: the build
+    /// forces `--permission-mode manual` so every prompt reaches `core_action_approve`.
+    fn check_native_options(&self, options: &BackendOptions) -> Result<(), ToolError> {
+        if options.args.iter().any(|arg| matches!(arg.split('=').next().unwrap_or(arg), "--permission-mode" | "--dangerously-skip-permissions")) {
+            return Err(ToolError::new(
+                ErrorCode::BadSettings,
+                "Backend extra arguments must not set --permission-mode or --dangerously-skip-permissions: Claude Code builds run in --permission-mode manual so every prompt reaches core_action_approve.",
+            )
+            .with_remediation("Remove that argument and allow what the build needs in the project's approvals instead, then try again."));
+        }
+        Ok(())
+    }
+
     /// Refuse a local custom subagent whose own `permissionMode` would accept edits without
     /// asking `core_action_approve`. A remote run's agents are on the other computer and aren't
     /// read here.
@@ -715,8 +728,17 @@ impl AgentAdapter for ClaudeCode {
         };
         a.extend(["--tools".into(), tools.into()]);
         if cx.builder {
+            // Manual is Claude Code's default mode; forcing it means a saved acceptEdits, auto or
+            // bypassPermissions default can't let a helper skip the approval tool.
             // Questions go through our core_person_ask tool, which the app shows as buttons.
-            a.extend(["--permission-prompt-tool".into(), format!("mcp__{MCP_NAME}__{APPROVAL_TOOL}"), "--disallowedTools".into(), "AskUserQuestion".into()]);
+            a.extend([
+                "--permission-mode".into(),
+                "manual".into(),
+                "--permission-prompt-tool".into(),
+                format!("mcp__{MCP_NAME}__{APPROVAL_TOOL}"),
+                "--disallowedTools".into(),
+                "AskUserQuestion".into(),
+            ]);
         }
         if let Some(dir) = cx.mcp.notes.as_deref().filter(|_| cx.builder) {
             // After every tool call, notes the person added meanwhile reach the model as context.

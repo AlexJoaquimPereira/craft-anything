@@ -1567,6 +1567,8 @@ mod tests {
             let tools = builder_tools(access);
             assert!(tools.split(',').any(|tool| tool == "Bash"), "{access:?}: {tools}");
             assert!(tools.split(',').any(|tool| tool == "Write"), "{access:?}: {tools}");
+            let builder = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, access);
+            assert_eq!(builder[builder.iter().position(|arg| arg == "--permission-mode").unwrap() + 1], "manual", "{access:?}");
         }
         // #1105: a Deep build can plan in one context and hand work to cheaper helpers. Clean
         // room leaves subagents out, where reads are held to the approval tool.
@@ -1798,6 +1800,7 @@ mod tests {
     fn builder_args_route_permissions_and_questions_to_us() {
         let a = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, Access::Build);
         let pos = |f: &str| a.iter().position(|x| x == f).unwrap();
+        assert_eq!(a[pos("--permission-mode") + 1], "manual", "a saved permissive default mode can't reach a helper");
         assert_eq!(a[pos("--permission-prompt-tool") + 1], "mcp__craft-anything__core_action_approve");
         assert_eq!(a[pos("--disallowedTools") + 1], "AskUserQuestion");
         assert!(a[pos("--tools") + 1].split(',').any(|tool| tool == "Agent"), "a Deep builder can start subagents");
@@ -1819,6 +1822,24 @@ mod tests {
         let m = McpCommand::local_or_remote(false, Some("/p/inv.cany".into()), Some("/p/inbox".into()));
         assert!(m.args.windows(2).any(|w| w[0] == "--inbox" && w[1] == "/p/inbox"));
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
+    }
+
+    /// A saved backend argument must not override the forced manual mode or bypass permissions.
+    #[test]
+    fn claude_refuses_backend_args_that_bypass_manual_mode() {
+        let adapter = adapter_for("claude-code");
+        for args in [
+            vec!["--permission-mode".into(), "acceptEdits".into()],
+            vec!["--permission-mode=bypassPermissions".into()],
+            vec!["--dangerously-skip-permissions".into()],
+        ] {
+            let options = BackendOptions { args, ..Default::default() };
+            let err = adapter.check_native_options(&options).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadSettings);
+            assert!(err.message.contains("--permission-mode") && err.message.contains("--dangerously-skip-permissions"), "{}", err.message);
+        }
+        let ok = BackendOptions { args: vec!["--model".into(), "opus".into()], ..Default::default() };
+        assert!(adapter.check_native_options(&ok).is_ok());
     }
 
     /// #1108: a custom subagent whose own `permissionMode` accepts edits would skip our approval

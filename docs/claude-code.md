@@ -34,7 +34,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   `craft.json`, the inbox, the approvals tool or that variable counts as a system change. These
   raise the bar; they aren't a wall: a builder allowed to run any command runs with the person's
   own permissions and could change those files another way, so "commands: allow" (Auto mode's
-  default) trusts the builder.
+  default) trusts the builder. A build starts Claude Code with `--permission-mode manual` (its
+  default mode), so a saved `permissions.defaultMode` can't make the builder or a default helper
+  skip the approval tool. Backend extra arguments that set `--permission-mode` or
+  `--dangerously-skip-permissions` are refused for the same reason.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
   and hand mechanical work to cheaper helpers. Spawning needs no permission, so it isn't in the
   allow list. Claude Code documents that a subagent can only use the session's own tools and that
@@ -45,7 +48,8 @@ integration does, why it is shaped this way, and what remains to confirm.
   subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
   Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
   lets a classifier decide, so its writes may not reach `core_action_approve`. A
-  `permissionMode: default` helper keeps the approval path. Plugin agents can't set
+  `permissionMode: default` helper keeps the approval path because the build starts in manual
+  mode. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder and every `.claude/agents/` from the project to its repository root, recursively; a file
