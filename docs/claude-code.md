@@ -35,6 +35,13 @@ integration does, why it is shaped this way, and what remains to confirm.
   raise the bar; they aren't a wall: a builder allowed to run any command runs with the person's
   own permissions and could change those files another way, so "commands: allow" (Auto mode's
   default) trusts the builder.
+- Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
+  and hand mechanical work to cheaper helpers. Spawning needs no permission, so it isn't in the
+  allow list. Claude Code documents that a subagent can only use the session's own tools and that
+  its tool calls are checked against the same permission rules; a call that would prompt is put to
+  `--permission-prompt-tool`, which is our `core_action_approve` (expected, not yet checked in a
+  live subagent run). Chats, questions and Clean room builds leave `Agent` out. Claude Code before
+  2.1.63 knows the tool as `Task`; those older CLIs don't get subagents from this change.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run

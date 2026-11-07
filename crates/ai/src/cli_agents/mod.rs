@@ -1535,6 +1535,7 @@ mod tests {
         McpCommand { command: "/opt/ca/craft-anything-cli".into(), args: vec!["mcp".into(), "--project".into(), "/p/x.cany".into()], notes: None }
     }
 
+    /// Claude Code's arguments, including the Deep/Clean-room split for subagents (#1105).
     #[test]
     fn claude_args() {
         let a = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "-what?", "PRE", &mcp(), Some("sess-1"), Access::Analyse);
@@ -1545,13 +1546,22 @@ mod tests {
         assert_eq!(a[pos("--output-format") + 1], "stream-json");
         assert!(a.contains(&"--verbose".to_string()));
         assert_eq!(a[pos("--tools") + 1], "", "built-in tools are opt-in");
-        for access in [Access::Build, Access::CleanRoomBuild] {
+        let builder_tools = |access| {
             let builder = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, access);
             let builder_pos = builder.iter().position(|x| x == "--tools").unwrap();
-            let tools = &builder[builder_pos + 1];
+            builder[builder_pos + 1].clone()
+        };
+        for access in [Access::Build, Access::CleanRoomBuild] {
+            let tools = builder_tools(access);
             assert!(tools.split(',').any(|tool| tool == "Bash"), "{access:?}: {tools}");
             assert!(tools.split(',').any(|tool| tool == "Write"), "{access:?}: {tools}");
         }
+        // #1105: a Deep build can plan in one context and hand work to cheaper helpers. Clean
+        // room leaves subagents out, where reads are held to the approval tool.
+        let deep_tools = builder_tools(Access::Build);
+        assert!(deep_tools.split(',').any(|tool| tool == "Agent"), "a Deep build can start subagents: {deep_tools}");
+        let clean_tools = builder_tools(Access::CleanRoomBuild);
+        assert!(!clean_tools.split(',').any(|tool| tool == "Agent" || tool == "Task"), "a Clean room build leaves subagents out: {clean_tools}");
         assert_eq!(a[pos("--resume") + 1], "sess-1");
         assert_eq!(a[pos("--allowedTools") + 1], "mcp__craft-anything__*");
         assert_eq!(a[pos("--model") + 1], "claude-opus-5-5", "Opus 5.5 unless configured otherwise");
@@ -1771,12 +1781,14 @@ mod tests {
         assert_eq!(claude_code_failure("rate limited"), ("Claude Code stopped: rate limited".to_string(), None));
     }
 
+    /// A builder's approvals and questions come to us, and a Deep builder may start subagents (#1105).
     #[test]
     fn builder_args_route_permissions_and_questions_to_us() {
         let a = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, Access::Build);
         let pos = |f: &str| a.iter().position(|x| x == f).unwrap();
         assert_eq!(a[pos("--permission-prompt-tool") + 1], "mcp__craft-anything__core_action_approve");
         assert_eq!(a[pos("--disallowedTools") + 1], "AskUserQuestion");
+        assert!(a[pos("--tools") + 1].split(',').any(|tool| tool == "Agent"), "a Deep builder can start subagents");
         assert!(a[pos("--allowedTools")..].contains(&"Read".to_string()));
         assert!(!a.iter().any(|x| x == "Write" || x == "Bash"), "writes and commands always go through the approval tool");
         let analysis = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "q", "PRE", &mcp(), None, Access::Analyse);
@@ -1799,13 +1811,14 @@ mod tests {
 
     /// #564: in Clean room a chat's reads aren't left to Claude Code's defaults. Its own file, shell
     /// and web tools are refused outright (a deny rule beats any allow), so only our tool server,
-    /// which keeps the original out of reach, is left; Deep mode is unchanged.
+    /// which keeps the original out of reach, is left; Deep mode is unchanged. Subagents (`Agent`
+    /// and its older name `Task`) are refused too.
     #[test]
     fn a_clean_room_chat_refuses_the_agents_own_file_tools_outright() {
         let args = |access| build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "q", "PRE", &mcp(), None, access);
         let clean = args(Access::CleanRoomAnalyse);
         let denied = &clean[clean.iter().position(|x| x == "--disallowedTools").expect("a deny list") + 1..];
-        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Edit", "Bash", "PowerShell", "WebFetch", "WebSearch"] {
+        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Edit", "Bash", "PowerShell", "WebFetch", "WebSearch", "Task", "Agent"] {
             assert!(denied.contains(&t.to_string()), "{t} is refused: {denied:?}");
         }
         let allowed = &clean[clean.iter().position(|x| x == "--allowedTools").unwrap() + 1..clean.iter().position(|x| x == "--disallowedTools").unwrap()];
@@ -1815,10 +1828,14 @@ mod tests {
         // A Clean room question refuses reading too (it used to leave that to the default).
         let q = args(Access::CleanRoomQuestion);
         let denied = &q[q.iter().position(|x| x == "--disallowedTools").unwrap() + 1..];
-        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Bash"] {
+        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Bash", "Task", "Agent"] {
             assert!(denied.contains(&t.to_string()), "{t} is refused in a Clean room question");
         }
         assert!(!q.contains(&"--allowedTools".to_string()));
+        // A Deep question denies helpers too, so it can't hand work to a subagent.
+        let deep_q = args(Access::Question);
+        let denied = &deep_q[deep_q.iter().position(|x| x == "--disallowedTools").unwrap() + 1..];
+        assert!(denied.contains(&"Agent".to_string()) && denied.contains(&"Task".to_string()), "a Deep question can't start subagents: {denied:?}");
     }
 
     /// #564: chats take their access from the mode, as builds and questions do.

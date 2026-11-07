@@ -326,13 +326,21 @@ pub fn notes_hook_settings(cli: &str, dir: &std::path::Path) -> String {
     json!({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 10}]}]}}).to_string()
 }
 
-/// Claude Code's tools that change something or reach outside, refused for a question.
+/// Claude Code's tools that change something, reach outside, or start helpers, refused for a
+/// question. `Task` is the pre-2.1.63 name of `Agent`; both are kept so older CLIs are held too.
 const CHANGING_TOOLS: &[&str] =
-    &["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "WebFetch", "WebSearch", "Task", "TodoWrite", "AskUserQuestion"];
+    &["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite", "AskUserQuestion"];
 
 /// Claude Code's tools that read files, refused outright in Clean room (#564): its defaults let it
 /// read in its own folder and refuse elsewhere only until a release or a setting changes that.
 const READING_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
+
+/// The built-in tools a builder gets. `Agent` is Claude Code 2.1.63's name for the subagent tool
+/// (it was `Task`); a Deep build gets it so the builder can hand work to cheaper helpers. Spawning
+/// needs no permission; Claude Code documents that a subagent's own calls are checked against the
+/// session's permission rules. Clean room leaves it out for now (#1105).
+const BUILDER_TOOLS: &str = "Bash,PowerShell,Read,Write,Edit,MultiEdit,Glob,Grep,TodoWrite,NotebookEdit";
+const DEEP_BUILDER_TOOLS: &str = "Agent,Bash,PowerShell,Read,Write,Edit,MultiEdit,Glob,Grep,TodoWrite,NotebookEdit";
 
 /// Claude Code answering a question about a build: the builder's session copied
 /// (`--fork-session`) and the copy not kept, no tool server, and only Read, Glob and Grep (none in
@@ -412,6 +420,8 @@ impl AgentAdapter for ClaudeCode {
         Ok(crate::anthropic::MODELS.iter().map(|model| model.to_string()).collect())
     }
 
+    /// Builds Claude Code's headless arguments. A Deep build adds `Agent` to `--tools` so it can
+    /// start subagents (#1105); chats, questions and Clean room builds leave it out.
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
         let mut a = cx.options.args.clone();
         if cx.question {
@@ -425,7 +435,11 @@ impl AgentAdapter for ClaudeCode {
         if let Some(r) = cx.resume {
             a.extend(["--resume".into(), r.to_string()]);
         }
-        let tools = if cx.builder { "Bash,PowerShell,Read,Write,Edit,MultiEdit,Glob,Grep,TodoWrite,NotebookEdit" } else { "" };
+        let tools = match (cx.builder, cx.reads_checked) {
+            (true, false) => DEEP_BUILDER_TOOLS,
+            (true, true) => BUILDER_TOOLS,
+            _ => "",
+        };
         a.extend(["--tools".into(), tools.into()]);
         if cx.builder {
             // Questions go through our core_person_ask tool, which the app shows as buttons.
