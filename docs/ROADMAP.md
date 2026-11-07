@@ -942,6 +942,7 @@ Gaps found while using the app for real projects.
       the latest few questions and answers, once, and a Clean room build only those asked in Clean
       room (#857). Not checked in a live build
 - [ ] A note sent while a build is running doesn't tell it what was asked in "Just ask" yet (#857)
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-note-just-ask
 - [ ] Record which mode a builder's session ran in: `agent_session` is kept across modes, so a Clean
       room build or question can resume a session from a Deep build and carry what it read, and such
       a question's answer is recorded as asked in Clean room. Don't resume one for Clean room
