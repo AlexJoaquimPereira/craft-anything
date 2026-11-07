@@ -436,6 +436,7 @@ Owner: open · Status: todo
 - [ ] When a project's saved builder was turned off, Start builds with the default AI without
       saying so: the UI picker filters the stale name out (`ui-egui/src/builders.rs`) instead of
       reporting that the chosen AI was replaced
+      — claimed: AlexJoaquimPereira, branch bugfix/r5.5-stale-builder-notice
 - [x] Bound accumulated data across all lines of one server-sent event, so short lines cannot
       grow a streamed API response without limit
       — claimed: Afloat16, branch bugfix/r5.5-bounded-sse-events-20261103
