@@ -693,6 +693,13 @@ impl AgentAdapter for ClaudeCode {
         if config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
             return Ok(());
         }
+        if options.args.iter().any(|arg| arg == "--add-dir" || arg.starts_with("--add-dir=")) {
+            return Err(ToolError::new(
+                ErrorCode::BadSettings,
+                "Backend --add-dir is not supported for a Deep build: Claude could load custom helper agents from those directories without checking their permissionMode.",
+            )
+            .with_remediation("Remove --add-dir, or move the helpers into .claude/agents so their modes are checked, then try again."));
+        }
         let config_dir = options.config_dir_here().or_else(|| self.config_dir());
         let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project)? else { return Ok(()) };
         Err(ToolError::new(

@@ -57,7 +57,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   or folder it can't read refuses the build rather than being skipped. A frontmatter that never
   closes within the first 64 KiB, isn't valid YAML, uses an alias, or nests more than 16 levels is
   refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
-  check doesn't resolve. A remote (SSH) Deep build
+  check doesn't resolve. The check runs at the start of every turn; a helper file changed later
+  in that turn isn't re-read, so a live run still has to establish Claude Code's mid-session
+  reload and approval behavior. A Deep build also refuses backend `--add-dir`, because Claude
+  could load helpers from those directories outside the scanned paths. A remote (SSH) Deep build
   leaves `Agent` out: its custom agents are on the other computer and the local check can't read
   them, so remote helper agents are a follow-up.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools

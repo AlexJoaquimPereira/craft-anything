@@ -1898,6 +1898,12 @@ mod tests {
         let user_options = BackendOptions { config_dir: Some(user.path().display().to_string()), ..Default::default() };
         let err = adapter_for("claude-code").check_subagent_modes(&backend, &user_options, None).unwrap_err();
         assert!(err.message.contains("user.md"), "{}", err.message);
+        // Added directories can hold their own .claude/agents outside the scanned paths.
+        for args in [vec!["--add-dir".into(), "/tmp/helpers".into()], vec!["--add-dir=/tmp/helpers".into()]] {
+            let added = BackendOptions { config_dir: options.config_dir.clone(), args, ..Default::default() };
+            let err = adapter_for("claude-code").check_subagent_modes(&backend, &added, Some(project.path())).unwrap_err();
+            assert!(err.message.contains("--add-dir"), "{}", err.message);
+        }
         // A remote run's agents are on the other computer and aren't read here.
         let remote = BackendConfig { ssh_host: Some("other".into()), ..backend };
         assert!(adapter_for("claude-code").check_subagent_modes(&remote, &options, Some(project.path())).is_ok());
