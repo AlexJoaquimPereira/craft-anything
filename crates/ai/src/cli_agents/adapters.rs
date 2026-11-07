@@ -417,6 +417,9 @@ impl ClaudeCode {
 
 /// The most of an agent definition we read while checking: its YAML frontmatter is at the top.
 const AGENT_FILE_CAP: u64 = 64 * 1024;
+/// Bounds for the nonrecursive event parser: a hostile frontmatter can't recurse or flood it.
+const MAX_YAML_DEPTH: usize = 16;
+const MAX_YAML_EVENTS: usize = 4096;
 /// A custom subagent's permission modes that may apply edits without asking us. A mode this build
 /// doesn't know is left to Claude Code's own default.
 const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto"];
@@ -490,9 +493,11 @@ fn scan_agent_dir(
             }
         } else if meta.is_file() && path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md")) {
             let text = read_agent_file(&path)?;
-            if let Some(mode) = agent_permission_mode(&text)
-                && PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(&mode))
-            {
+            let modes = agent_permission_modes(&text).map_err(|why| {
+                ToolError::new(ErrorCode::BadSettings, format!("Couldn't check the custom agent {}: {why}.", path.display()))
+                    .with_remediation("Fix or remove the file, then try again.")
+            })?;
+            if let Some(mode) = modes.into_iter().find(|mode| PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(mode))) {
                 return Ok(Some((path, mode)));
             }
         }
@@ -511,7 +516,26 @@ fn read_agent_file(path: &std::path::Path) -> Result<String, ToolError> {
     }
     let mut bytes = Vec::new();
     std::fs::File::open(path).map_err(|e| agent_read_error(path, &e))?.take(AGENT_FILE_CAP).read_to_end(&mut bytes).map_err(|e| agent_read_error(path, &e))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let text = String::from_utf8_lossy(&bytes);
+    if bytes.len() as u64 >= AGENT_FILE_CAP && !frontmatter_closed(&text) {
+        return Err(ToolError::new(
+            ErrorCode::BadSettings,
+            format!("The custom agent {} has no closing `---` for its frontmatter within the first {} KiB.", path.display(), AGENT_FILE_CAP / 1024),
+        )
+        .with_remediation("Add the closing `---` before the prompt, or remove the file, then try again."));
+    }
+    Ok(text.into_owned())
+}
+
+/// Whether the file has no frontmatter, or its opening frontmatter has a closing `---` in the
+/// bytes read.
+fn frontmatter_closed(text: &str) -> bool {
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else { return true };
+    if first.trim_start_matches('\u{feff}').trim() != "---" {
+        return true;
+    }
+    lines.any(|line| line.trim() == "---")
 }
 
 /// A custom agent file or folder that couldn't be read: fail the check rather than skip it.
@@ -520,20 +544,66 @@ fn agent_read_error(path: &std::path::Path, e: &std::io::Error) -> ToolError {
         .with_remediation("Check that the file and its folders are readable, or remove them, then try again.")
 }
 
-/// A top-level `permissionMode` (or `permission-mode`) in an agent's YAML frontmatter. A real
-/// YAML parser reads quoted keys, whitespace before the colon and comments the same way Claude
-/// Code does; malformed YAML is left to Claude Code and doesn't count as a mode here.
-fn agent_permission_mode(text: &str) -> Option<String> {
-    let yaml = agent_frontmatter(text)?;
-    let docs = yaml_rust2::YamlLoader::load_from_str(&yaml).ok()?;
-    let map = docs.first()?.as_hash()?;
-    ["permissionMode", "permission-mode"].into_iter().find_map(|key| {
-        map.get(&yaml_rust2::Yaml::String(key.to_string()))
-            .and_then(yaml_rust2::Yaml::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    })
+/// The top-level `permissionMode`/`permission-mode` values in an agent's YAML frontmatter.
+/// Uses `yaml-rust2`'s event iterator (`Parser::next_token`), not the recursive
+/// `Parser::load`/`YamlLoader`: depth and event counts are bounded, and invalid YAML, aliases or
+/// over-limit input fail closed rather than being skipped.
+fn agent_permission_modes(text: &str) -> Result<Vec<String>, String> {
+    use yaml_rust2::parser::{Event, Parser};
+    let Some(yaml) = agent_frontmatter(text) else { return Ok(Vec::new()) };
+    let mut parser = Parser::new_from_str(&yaml);
+    let (mut depth, mut events) = (0usize, 0usize);
+    let (mut expect_key, mut want_value) = (false, false);
+    let mut modes = Vec::new();
+    loop {
+        events += 1;
+        if events > MAX_YAML_EVENTS {
+            return Err("its frontmatter has too many entries to check".into());
+        }
+        let (event, _) = parser.next_token().map_err(|e| format!("its frontmatter isn't valid YAML: {e}"))?;
+        match event {
+            Event::StreamStart | Event::DocumentStart | Event::DocumentEnd | Event::Nothing => {}
+            Event::StreamEnd => break,
+            Event::MappingStart(..) | Event::SequenceStart(..) => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_YAML_DEPTH {
+                    return Err(format!("its frontmatter is nested more than {MAX_YAML_DEPTH} levels deep"));
+                }
+                if depth == 1 {
+                    expect_key = true;
+                }
+            }
+            Event::MappingEnd | Event::SequenceEnd => {
+                depth = depth.saturating_sub(1);
+                if depth == 1 {
+                    expect_key = true;
+                    want_value = false;
+                }
+            }
+            Event::Scalar(value, ..) => {
+                if depth == 1 {
+                    if expect_key {
+                        if value == "<<" {
+                            return Err("its frontmatter uses a YAML merge key, which this check doesn't resolve".into());
+                        }
+                        want_value = value == "permissionMode" || value == "permission-mode";
+                        expect_key = false;
+                    } else {
+                        if want_value {
+                            let value = value.trim();
+                            if !value.is_empty() {
+                                modes.push(value.to_string());
+                            }
+                            want_value = false;
+                        }
+                        expect_key = true;
+                    }
+                }
+            }
+            Event::Alias(_) => return Err("its frontmatter uses a YAML alias, which this check doesn't resolve".into()),
+        }
+    }
+    Ok(modes)
 }
 
 /// The YAML between the opening and closing `---` lines, with the same boundary rule as before.

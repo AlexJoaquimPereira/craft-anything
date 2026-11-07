@@ -49,7 +49,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder and every `.claude/agents/` from the project to its repository root, recursively; a file
-  or folder it can't read refuses the build rather than being skipped. A remote (SSH) Deep build
+  or folder it can't read refuses the build rather than being skipped. A frontmatter that never
+  closes within the first 64 KiB, isn't valid YAML, uses an alias, or nests more than 16 levels is
+  refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
+  check doesn't resolve. A remote (SSH) Deep build
   leaves `Agent` out: its custom agents are on the other computer and the local check can't read
   them, so remote helper agents are a follow-up.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools

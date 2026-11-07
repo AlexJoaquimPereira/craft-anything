@@ -1914,6 +1914,62 @@ mod tests {
         assert!(err.message.contains("broken.md"), "{}", err.message);
     }
 
+    /// A frontmatter that never closes inside the 64 KiB prefix must fail, not parse truncated
+    /// YAML and miss a permissive mode.
+    #[test]
+    fn an_unclosed_frontmatter_before_the_cap_is_refused() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let mut text = String::from("---\nname: big\npermissionMode: acceptEdits\n");
+        text.push_str(&"x".repeat(70 * 1024));
+        std::fs::write(agents.join("big.md"), text).unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+        assert!(err.message.contains("big.md") && err.message.contains("closing `---`"), "{}", err.message);
+    }
+
+    /// A top-level YAML merge key can carry a literal `permissionMode`; refuse it rather than
+    /// letting the nested mapping hide a permissive mode.
+    #[test]
+    fn a_top_level_yaml_merge_key_is_refused() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("merge.md"), "---\nname: helper\n<<:\n  permissionMode: acceptEdits\n---\n").unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+        assert!(err.message.contains("merge.md") && err.message.contains("merge key"), "{}", err.message);
+    }
+
+    /// Invalid YAML, aliases and over-nested frontmatter fail closed instead of being skipped.
+    #[test]
+    fn invalid_aliased_or_over_nested_frontmatter_is_refused() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let nested = format!("---\nx: {}1{}\n---\n", "{a: ".repeat(20), "}".repeat(20));
+        for (name, frontmatter, why) in [
+            ("nested.md", nested, "nested"),
+            ("alias.md", "---\nmode: &m acceptEdits\npermissionMode: *m\n---\n".into(), "alias"),
+            ("invalid.md", "---\npermissionMode: [unclosed\n---\n".into(), "valid YAML"),
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            let agents = project.path().join(".claude/agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(agents.join(name), frontmatter).unwrap();
+            let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+            assert!(err.message.contains(name) && err.message.contains(why), "{}", err.message);
+        }
+    }
+
     /// #1108: the frontmatter is real YAML, so quoted keys and whitespace before the colon mean
     /// the same as the unquoted form.
     #[test]
