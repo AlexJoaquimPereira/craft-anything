@@ -678,6 +678,14 @@ builder loop saved the reset only after a successful turn. A failed or cancelled
 removed the note, so reopening kept the old unchanged-turn count. Persist deferred request state
 on terminal errors too, outside provider retries; keep the original outcome if that save also fails.
 
+**Context added to the message but not the note.** "Just ask" answers were prepended to the
+builder's next message, but a note can reach a builder through its tool hook before any message,
+so the note carried the request without what it referred to. Put shared context where every path
+reads it (the note's hand-over file and the after-turn prompt), not in one delivery path, and test
+the fast path (hook) and the fallback (after the turn) separately. Mark it told only when the note
+is actually read or sent, never when it is written; and keep a note's raw text so a later run can
+filter answers by its own mode.
+
 **Lower-casing a command, then comparing its paths.** Auto mode lower-cased a shell command to
 match keywords, then checked its paths against the project folder with that same text; Windows
 compares paths without case, so only a Mac showed it: deleting `/Users/…/app/Build` in the

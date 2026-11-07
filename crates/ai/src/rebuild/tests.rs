@@ -414,17 +414,93 @@ fn notes_added_while_it_works_reach_the_agent_at_its_next_step() {
         self_check: None,
         reset_progress_after_notes: false,
     };
-    assert!(w.added(&mut ws).is_none(), "nothing added, nothing to say");
-    let note = |id, text: &str| Note { id, text: format!("{text} (pictures: a.png)"), shown: text.into(), pictures: Vec::new() };
-    notes.lock().unwrap().extend([note(1, "Make it faster"), note(2, "A blue sky")]);
-    let p = w.added(&mut ws).unwrap();
-    assert!(p.contains("- Make it faster (pictures: a.png)\n- A blue sky"), "{p}");
+    assert!(w.added(&mut ws, true).is_none(), "nothing added, nothing to say");
+    use craft_anything_engine::questions::{self, AskedQuestion};
+    let asked = AskedQuestion { deep: false, ..AskedQuestion::new("where is the score kept".into(), "In src.".into(), true, "Stand-in".into(), None, 0) };
+    questions::add(&ws, asked.clone()).unwrap();
+    let note = |id, text: &str| Note { id, text: format!("{text} (pictures: a.png)"), shown: text.into(), pictures: Vec::new(), questions: Vec::new() };
+    let mut first = note(1, "Make it faster");
+    first.questions = vec![asked];
+    notes.lock().unwrap().extend([first, note(2, "A blue sky")]);
+    let (p, more) = w.added(&mut ws, true).unwrap();
+    assert!(p.contains("where is the score kept") && p.contains("- Make it faster (pictures: a.png)\n- A blue sky"), "{p}");
+    assert_eq!(more.len(), 1, "the question is marked told after the turn");
     assert!(notes.lock().unwrap().is_empty(), "each note goes in once");
     // The notes join the feed as they're read, before the step that reads them.
     let events: Vec<RunEvent> = rx.try_iter().collect();
     let shown: Vec<_> = events.iter().filter_map(|e| if let RunEvent::Note { shown, .. } = e { Some(shown.as_str()) } else { None }).collect();
     assert_eq!(shown, ["Make it faster", "A blue sky"]);
     assert!(matches!(events.last(), Some(RunEvent::Step { text, .. }) if text == "Reading what you added…"));
+}
+
+/// #857: a note handed over by a coding agent's tool hook never sees the after-turn message, so
+/// the Just-ask answers are put in the note itself (only the ones this mode may show).
+#[test]
+fn a_note_carries_the_just_ask_answers_once_and_only_in_their_mode() {
+    use craft_anything_engine::questions::{self, AskedQuestion};
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "x", "A thing", TargetRef::None).unwrap();
+    let clean =
+        AskedQuestion { deep: false, ..AskedQuestion::new("where is the score kept".into(), "In src/score.rs.".into(), true, "Stand-in".into(), None, 0) };
+    questions::add(&ws, clean.clone()).unwrap();
+    let (text, carried) = note_with_just_asked("make it blue".into(), &ws, false, &[]);
+    assert!(text.contains("where is the score kept") && text.contains("make it blue"), "{text}");
+    assert_eq!(carried.len(), 1);
+
+    // A note already waiting carries it; the next one doesn't repeat it.
+    let (again, none) = note_with_just_asked("make it green".into(), &ws, false, &carried);
+    assert!(!again.contains("where is the score kept") && none.is_empty(), "{again}");
+
+    // A Deep question stays out of a Clean room note.
+    questions::add(
+        &ws,
+        AskedQuestion { deep: true, ..AskedQuestion::new("what does the original do".into(), "It reads a file.".into(), true, "Stand-in".into(), None, 0) },
+    )
+    .unwrap();
+    let (clean_note, carried) = note_with_just_asked("make it blue".into(), &ws, true, &[]);
+    assert!(clean_note.contains("where is the score kept") && !clean_note.contains("what does the original do"), "{clean_note}");
+    assert_eq!(carried.len(), 1, "only the Clean room question");
+}
+
+/// The app writes the enriched note for both hand-over paths, so the hook prints the answers.
+#[test]
+fn a_note_written_for_the_hook_carries_its_answers() {
+    use craft_anything_engine::questions::{self, AskedQuestion};
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "x", "A thing", TargetRef::None).unwrap();
+    let asked =
+        AskedQuestion { deep: false, ..AskedQuestion::new("where is the score kept".into(), "In src/score.rs.".into(), true, "Stand-in".into(), None, 0) };
+    questions::add(&ws, asked.clone()).unwrap();
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let feed = Arc::new(Mutex::new(feed::FeedLog::open(&ws)));
+    let activity = feed.lock().unwrap_or_else(PoisonError::into_inner).activity();
+    let run = RebuildRun {
+        rx,
+        stop: CancelToken::default(),
+        inbox: Inbox::new(ws.inbox_dir()),
+        running: Arc::new(AtomicBool::new(true)),
+        preview: Arc::default(),
+        notes: Arc::default(),
+        clean_room: false,
+        feed,
+        root: ws.root.clone(),
+        started: Instant::now(),
+        activity,
+    };
+    let id = run.add_note("make it blue".into(), "make it blue".into(), Vec::new());
+    let note = run.waiting().pop().unwrap();
+    assert_eq!(note.text, "make it blue", "the in-memory text stays raw for a later run's mode");
+    assert_eq!(note.questions.len(), 1);
+
+    let dir = notes::notes_dir(&ws.inbox_dir());
+    let claimed = notes::claim(&dir);
+    assert_eq!(claimed.len(), 1);
+    assert!(claimed[0].contains("where is the score kept"), "{}", claimed[0]);
+    assert!(notes::was_read(&dir, id));
+    // The run ended before relaying it: its raw text goes next, and the next run's mode decides
+    // whether the answers are included, so they stay untold here.
+    assert_eq!(run.take_notes().len(), 1);
+    assert_eq!(questions::untold(&ws, false).len(), 1, "the next run decides whether to tell it");
 }
 
 #[test]
@@ -1872,7 +1948,7 @@ mod picking_up_a_build {
         use crate::model::{Block, ChatModel, Delta, Stop, StopReason, TurnRequest, TurnResult};
         type Notes = Arc<Mutex<Vec<Note>>>;
         fn note(text: &str) -> Note {
-            Note { id: 42, text: text.into(), shown: text.into(), pictures: Vec::new() }
+            Note { id: 42, text: text.into(), shown: text.into(), pictures: Vec::new(), questions: Vec::new() }
         }
         struct NoteModel {
             script: Scripted,
@@ -2848,8 +2924,11 @@ fn a_console_original_is_rebuilt_as_a_console_program() {
 
 #[test]
 fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
+    use craft_anything_engine::questions::{self, AskedQuestion};
     let d = tempfile::tempdir().unwrap();
     let mut ws = Workspace::create(d.path(), "Site", "Clone it", TargetRef::None).unwrap();
+    let asked = AskedQuestion { deep: false, ..AskedQuestion::new("where is the score kept".into(), "In src.".into(), true, "Stand-in".into(), None, 0) };
+    questions::add(&ws, asked.clone()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Worker {
         wake: Default::default(),
@@ -2861,8 +2940,8 @@ fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
         inbox: Inbox::new(ws.inbox_dir()),
         editor: None,
         notes: Arc::new(Mutex::new(vec![
-            Note { id: 1, text: "make the header blue".into(), shown: "make the header blue".into(), pictures: Vec::new() },
-            Note { id: 2, text: "add a footer".into(), shown: "add a footer".into(), pictures: Vec::new() },
+            Note { id: 1, text: "make the header blue".into(), shown: "make the header blue".into(), pictures: Vec::new(), questions: vec![asked] },
+            Note { id: 2, text: "add a footer".into(), shown: "add a footer".into(), pictures: Vec::new(), questions: Vec::new() },
         ])),
         feed: Arc::new(Mutex::new(feed::FeedLog::open(&ws))),
         assets: false,
@@ -2879,11 +2958,12 @@ fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
     assert_eq!(notes::claim(&dir), ["make the header blue"]);
     std::fs::rename(dir.join("2.wait"), dir.join("2.json")).unwrap();
     w.relay_read_notes(&ws);
+    assert!(questions::untold(&ws, false).is_empty(), "the answers in a read note are told");
     let shown: Vec<String> = rx.try_iter().filter_map(|e| if let RunEvent::Note { shown, .. } = e { Some(shown) } else { None }).collect();
     assert_eq!(shown, ["make the header blue"], "it joins the feed as soon as the builder took it");
     assert!(!notes::was_read(&dir, 1), "its files are gone");
     // After the turn, only the note nobody took is sent, and no hook can hand it over again.
-    let follow = w.added(&mut ws).unwrap();
+    let (follow, _) = w.added(&mut ws, true).unwrap();
     assert!(follow.contains("add a footer") && !follow.contains("make the header blue"), "{follow}");
     assert!(notes::claim(&dir).is_empty());
 }
