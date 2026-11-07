@@ -858,6 +858,13 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
         return nothing_done(&name);
     }
+    if spec.builder.is_some()
+        && spec.deep
+        && let Err(e) = adapter.check_subagent_modes(&spec.config, &spec.options, spec.project.as_deref())
+    {
+        let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+        return nothing_done(&name);
+    }
     if let Err(e) = adapter.validate_model(&spec.config, &spec.options, spec.project.as_deref(), stop) {
         let event = if e.code == ErrorCode::Cancelled {
             AgentEvent::Status { text: "Stopped.".into() }
@@ -1807,6 +1814,57 @@ mod tests {
         let m = McpCommand::local_or_remote(false, Some("/p/inv.cany".into()), Some("/p/inbox".into()));
         assert!(m.args.windows(2).any(|w| w[0] == "--inbox" && w[1] == "/p/inbox"));
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
+    }
+
+    /// CodeRabbit #1108: a custom subagent whose own `permissionMode` accepts edits would skip our
+    /// approval tool. A Deep build refuses it, naming the file; a `default` helper is allowed.
+    #[test]
+    fn a_permissive_custom_subagent_is_refused_before_a_deep_build() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        for mode in ["acceptEdits", "bypassPermissions", "auto"] {
+            let project = tempfile::tempdir().unwrap();
+            let agents = project.path().join(".claude/agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(agents.join("helper.md"), format!("---\nname: helper\ndescription: x\npermissionMode: \"{mode}\" # checked\n---\nBody\n")).unwrap();
+            let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadSettings);
+            assert!(err.message.contains("helper.md") && err.message.contains(mode), "{}", err.message);
+        }
+        // A default helper keeps the approval path, and a body-only mention is not frontmatter.
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("default.md"), "---\nname: default\npermissionMode: default\n---\nBody\n").unwrap();
+        std::fs::write(agents.join("example.md"), "No frontmatter.\npermissionMode: acceptEdits\n").unwrap();
+        assert!(adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).is_ok());
+        // The frontmatter is read even when the prompt body is large, and the extension's case
+        // doesn't hide a definition.
+        let large = tempfile::tempdir().unwrap();
+        let large_agents = large.path().join(".claude/agents");
+        std::fs::create_dir_all(&large_agents).unwrap();
+        std::fs::write(large_agents.join("large.md"), format!("---\nname: large\npermissionMode: acceptEdits\n---\n{}", "x".repeat(2 * 1024 * 1024))).unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(large.path())).unwrap_err();
+        assert!(err.message.contains("large.md"), "{}", err.message);
+        let upper = tempfile::tempdir().unwrap();
+        let upper_agents = upper.path().join(".claude/agents");
+        std::fs::create_dir_all(&upper_agents).unwrap();
+        std::fs::write(upper_agents.join("upper.MD"), "---\nname: upper\npermissionMode: acceptEdits\n---\n").unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(upper.path())).unwrap_err();
+        assert!(err.message.contains("upper.MD"), "{}", err.message);
+        // The chosen config folder's own agents are checked too.
+        let user = tempfile::tempdir().unwrap();
+        let user_agents = user.path().join("agents");
+        std::fs::create_dir_all(&user_agents).unwrap();
+        std::fs::write(user_agents.join("user.md"), "---\nname: user\npermissionMode: bypassPermissions\n---\n").unwrap();
+        let user_options = BackendOptions { config_dir: Some(user.path().display().to_string()), ..Default::default() };
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &user_options, None).unwrap_err();
+        assert!(err.message.contains("user.md"), "{}", err.message);
+        // A remote run's agents are on the other computer and aren't read here.
+        let remote = BackendConfig { ssh_host: Some("other".into()), ..backend };
+        assert!(adapter_for("claude-code").check_subagent_modes(&remote, &options, Some(project.path())).is_ok());
     }
 
     /// #564: in Clean room a chat's reads aren't left to Claude Code's defaults. Its own file, shell

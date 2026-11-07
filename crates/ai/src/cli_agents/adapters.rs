@@ -75,6 +75,12 @@ pub trait AgentAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Refuse a custom helper that would act without the approval tool. The default has none.
+    /// `project` is the folder the agent runs in; `config` says whether it runs on another computer.
+    fn check_subagent_modes(&self, _config: &BackendConfig, _options: &BackendOptions, _project: Option<&Path>) -> Result<(), ToolError> {
+        Ok(())
+    }
+
     /// Use ACP by default and refuse the per-message CLI runner. An explicit `acp = false` or
     /// an SSH host must fail rather than opening an interactive agent with no approval channel.
     fn requires_acp(&self) -> bool {
@@ -395,6 +401,77 @@ impl ClaudeCode {
     }
 }
 
+/// The most of an agent definition we read while checking: its YAML frontmatter is at the top.
+const AGENT_FILE_CAP: u64 = 64 * 1024;
+/// A custom subagent's permission modes that may apply edits without asking us. A mode this build
+/// doesn't know is left to Claude Code's own default.
+const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto"];
+
+/// The first custom subagent whose own permission mode would accept edits without asking the
+/// project's approval tool. Claude Code loads agents from `agents/` in its config folder and
+/// `.claude/agents/` in the project.
+fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Option<(std::path::PathBuf, String)> {
+    let mut dirs = Vec::with_capacity(2);
+    if let Some(dir) = config_dir {
+        dirs.push(dir.join("agents"));
+    }
+    if let Some(root) = project {
+        dirs.push(root.join(".claude").join("agents"));
+    }
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        // Scan every entry: skipping an agent would be a bypass. The check runs once per turn, so a
+        // very large agents folder costs one scan, not one per draw.
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+                continue;
+            }
+            let Some(text) = read_agent_file(&path) else { continue };
+            let Some(mode) = agent_permission_mode(&text) else { continue };
+            if PERMISSIVE_MODES.iter().any(|m| m.eq_ignore_ascii_case(mode)) {
+                return Some((path, mode.to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// The file's first [`AGENT_FILE_CAP`] bytes: enough for the frontmatter, and a huge body can't
+/// stall a build. Lossy decoding keeps a character cut at the cap from hiding the frontmatter.
+fn read_agent_file(path: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(AGENT_FILE_CAP).read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A top-level `permissionMode:` (or `permission-mode:`) in an agent's YAML frontmatter.
+fn agent_permission_mode(text: &str) -> Option<&str> {
+    let mut lines = text.lines();
+    if lines.next()?.trim_start_matches('\u{feff}').trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let line = line.trim();
+        if line == "---" {
+            return None;
+        }
+        for key in ["permissionMode:", "permission-mode:"] {
+            if let Some(value) = line.strip_prefix(key) {
+                let value = value.trim();
+                let value = value.split(" #").next().unwrap_or(value).trim();
+                let value = value.trim_matches(['"', '\'']).trim();
+                return (!value.is_empty()).then_some(value);
+            }
+        }
+    }
+    None
+}
+
 impl AgentAdapter for ClaudeCode {
     fn ids(&self) -> &'static [&'static str] {
         &["claude-code", "claude"]
@@ -410,6 +487,24 @@ impl AgentAdapter for ClaudeCode {
 
     fn check_tool_server(&self, stop: &CancelToken) -> Result<(), ToolError> {
         cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
+    }
+
+    /// Refuse a local custom subagent whose own `permissionMode` would accept edits without
+    /// asking `core_action_approve`. A remote run's agents are on the other computer and aren't
+    /// read here.
+    fn check_subagent_modes(&self, config: &BackendConfig, options: &BackendOptions, project: Option<&Path>) -> Result<(), ToolError> {
+        if config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
+            return Ok(());
+        }
+        let config_dir = options.config_dir_here().or_else(|| self.config_dir());
+        let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project) else { return Ok(()) };
+        Err(ToolError::new(
+            ErrorCode::BadSettings,
+            format!("Claude Code's custom helper agent {} sets permissionMode: {mode}, so its edits would skip this project's approvals.", path.display()),
+        )
+        .with_remediation(
+            "Change that subagent to permissionMode: default, or remove it, then try again. A default helper's edits go through core_action_approve.",
+        ))
     }
 
     fn model_in_use(&self, options: Option<&BackendOptions>) -> Option<String> {

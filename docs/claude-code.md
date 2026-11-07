@@ -41,7 +41,14 @@ integration does, why it is shaped this way, and what remains to confirm.
   its tool calls are checked against the same permission rules; a call that would prompt is put to
   `--permission-prompt-tool`, which is our `core_action_approve` (expected, not yet checked in a
   live subagent run). Chats, questions and Clean room builds leave `Agent` out. Claude Code before
-  2.1.63 knows the tool as `Task`; those older CLIs don't get subagents from this change.
+  2.1.63 knows the tool as `Task`; those older CLIs don't get subagents from this change. A custom
+  subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
+  Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
+  lets a classifier decide, so its writes may not reach `core_action_approve`. A
+  `permissionMode: default` helper keeps the approval path. Plugin agents can't set
+  `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
+  added mid-build is caught before the next turn. The check reads `agents/` in the chosen config
+  folder and `.claude/agents/` in the project, on this computer (a remote run isn't checked).
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run
