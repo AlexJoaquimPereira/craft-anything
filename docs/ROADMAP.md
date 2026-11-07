@@ -941,8 +941,10 @@ Gaps found while using the app for real projects.
 - [x] "Change it" knows what was just talked about in "Just ask": the next message tells the builder
       the latest few questions and answers, once, and a Clean room build only those asked in Clean
       room (#857). Not checked in a live build
-- [ ] A note sent while a build is running doesn't tell it what was asked in "Just ask" yet (#857)
-      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-note-just-ask
+- [x] A note sent while a build is running tells it what was asked in "Just ask" (#857): the
+      note's hand-over file carries the answers, and the after-turn path puts them before the
+      notes; only answers the run's mode may show, marked told when read or sent
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-note-just-ask; commit 78d3963
 - [ ] Record which mode a builder's session ran in: `agent_session` is kept across modes, so a Clean
       room build or question can resume a session from a Deep build and carry what it read, and such
       a question's answer is recorded as asked in Clean room. Don't resume one for Clean room
