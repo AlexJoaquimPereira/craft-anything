@@ -2628,7 +2628,7 @@ fn a_turned_off_or_removed_saved_builder_says_who_builds_instead() {
 
     // A removed one too.
     assert_eq!(h.state_mut().builder_backend(Some("Gone")).as_deref(), Some("Claude"));
-    assert!(h.state().state.toasts.iter().any(|(t, _)| t.contains("Gone") && t.contains("Claude")), "{:?}", h.state().state.toasts);
+    assert!(h.state().state.toasts.iter().any(|(t, err)| !*err && t.contains("Gone") && t.contains("Claude")), "{:?}", h.state().state.toasts);
 
     // An enabled choice, and Automatic, say nothing.
     let quiet = h.state().state.toasts.len();

@@ -146,12 +146,15 @@ impl CraftApp {
         let choices = self.builder_choices();
         let kept = wanted.filter(|w| choices.iter().any(|c| c.name == *w));
         let name = kept.map(str::to_string).or_else(|| self.default_builder())?;
-        // A saved choice that was turned off or removed is replaced, and the person is told:
-        // otherwise a build can quietly use an AI they did not choose (and may pay for).
-        if let Some(saved) = wanted.filter(|w| !w.is_empty() && kept.is_none() && *w != name.as_str()) {
-            self.toast(replaced_builder_notice(saved, &name), false);
-        }
-        let Some(found) = self.found_agents().find(|b| b.name == name).cloned() else { return Some(name) };
+        // A saved choice that was turned off or removed is replaced. The notice waits until a
+        // builder is committed, so a failed setup doesn't claim one will build.
+        let replaced = wanted.filter(|w| !w.is_empty() && kept.is_none() && *w != name.as_str());
+        let Some(found) = self.found_agents().find(|b| b.name == name).cloned() else {
+            if let Some(saved) = replaced {
+                self.toast(replaced_builder_notice(saved, &name), false);
+            }
+            return Some(name);
+        };
         // Saved but switched off (#423): turn it on, keeping its program and folder, rather than
         // saving a second copy over it.
         let saved = self.backends.iter().any(|b| b.name == found.name);
@@ -161,6 +164,9 @@ impl CraftApp {
                 match self.backends.iter_mut().find(|b| b.name == found.name) {
                     Some(b) => b.enabled = true,
                     None => self.backends.push(found),
+                }
+                if let Some(saved) = replaced {
+                    self.toast(replaced_builder_notice(saved, &name), false);
                 }
                 Some(name)
             }
