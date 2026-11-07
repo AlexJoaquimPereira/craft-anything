@@ -819,6 +819,10 @@ Owner: open · Status: in progress
       command that breaks it. The installed skill now warns against running `setup` on such an entry;
       `doctor` and `setup` should keep the person's extra arguments instead
       — claimed: 18923837179wjt-dot, branch fix/setup-skill-warns-before-setup-drops-all-tools
+- [ ] Claude Code builders can start subagents again: a Deep build's `--tools` list includes
+      `Agent`; a subagent's own tool calls still reach `core_action_approve`, and questions and
+      Clean room leave it out (#1105)
+      — claimed: AlexJoaquimPereira, branch `bugfix/r2.2-claude-agent-subagents`
 
 ### R2.4 Runtime study for apps and games (with consent)
 Owner: maintainers · Status: in progress
