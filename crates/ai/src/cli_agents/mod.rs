@@ -1834,11 +1834,17 @@ mod tests {
             vec!["--dangerously-skip-permissions".into()],
             vec!["--permission-prompts".into(), "none".into()],
             vec!["--permission-prompts=none".into()],
+            vec!["--agents".into(), r#"{"helper":{"permissionMode":"acceptEdits"}}"#.into()],
+            vec![r#"--agents={"helper":{"permissionMode":"acceptEdits"}}"#.into()],
         ] {
             let options = BackendOptions { args, ..Default::default() };
             let err = adapter.check_native_options(&options).unwrap_err();
             assert_eq!(err.code, ErrorCode::BadSettings);
-            assert!(err.message.contains("--permission-mode") && err.message.contains("--dangerously-skip-permissions"), "{}", err.message);
+            assert!(
+                err.message.contains("--permission-mode") && err.message.contains("--dangerously-skip-permissions") && err.message.contains("--agents"),
+                "{}",
+                err.message
+            );
         }
         for args in [vec!["--model".into(), "opus".into()], vec!["--permission-prompts".into(), "host".into()]] {
             let options = BackendOptions { args, ..Default::default() };

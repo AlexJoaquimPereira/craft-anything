@@ -672,14 +672,16 @@ impl AgentAdapter for ClaudeCode {
     fn check_native_options(&self, options: &BackendOptions) -> Result<(), ToolError> {
         let denies_prompts = options.args.iter().any(|arg| arg == "--permission-prompts=none")
             || options.args.windows(2).any(|pair| pair[0] == "--permission-prompts" && pair[1] == "none");
+        let defines_agents = options.args.iter().any(|arg| arg == "--agents" || arg.starts_with("--agents="));
         if denies_prompts
+            || defines_agents
             || options.args.iter().any(|arg| matches!(arg.split('=').next().unwrap_or(arg), "--permission-mode" | "--dangerously-skip-permissions"))
         {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
-                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions or --permission-prompts none: Claude Code builds run in --permission-mode manual so every prompt reaches core_action_approve.",
+                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode manual so every prompt reaches core_action_approve, and inline agent definitions bypass the file mode check.",
             )
-            .with_remediation("Remove that argument and allow what the build needs in the project's approvals instead, then try again."));
+            .with_remediation("Remove that argument; put custom helpers in .claude/agents so their modes are checked, and allow what the build needs in the project's approvals instead, then try again."));
         }
         Ok(())
     }
