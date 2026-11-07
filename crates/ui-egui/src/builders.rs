@@ -138,7 +138,19 @@ impl CraftApp {
     /// only found is set up now (it needs no key, and the person pressed Start).
     pub fn builder_backend(&mut self, wanted: Option<&str>) -> Option<String> {
         let choices = self.builder_choices();
-        let name = wanted.filter(|w| choices.iter().any(|c| c.name == *w)).map(str::to_string).or_else(|| self.default_builder())?;
+        let kept = wanted.filter(|w| choices.iter().any(|c| c.name == *w));
+        let name = kept.map(str::to_string).or_else(|| self.default_builder())?;
+        // A saved choice that was turned off or removed is replaced, and the person is told:
+        // otherwise a build can quietly use an AI they did not choose (and may pay for).
+        if let Some(saved) = wanted.filter(|w| !w.is_empty() && kept.is_none() && *w != name.as_str()) {
+            self.toast(
+                trf(
+                    "The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.",
+                    &[("saved", saved), ("used", name.as_str())],
+                ),
+                false,
+            );
+        }
         let Some(found) = self.found_agents().find(|b| b.name == name).cloned() else { return Some(name) };
         // Saved but switched off (#423): turn it on, keeping its program and folder, rather than
         // saving a second copy over it.
@@ -348,9 +360,18 @@ pub fn built_by(app: &mut CraftApp, ui: &mut Ui) {
         return;
     };
     let choices = app.builder_choices();
-    // A choice that was removed or turned off meanwhile goes back to automatic.
-    if app.state.make.ai.as_ref().is_some_and(|a| !choices.iter().any(|c| &c.name == a)) {
+    // A choice that was removed or turned off meanwhile goes back to automatic, and the toast
+    // says which AI builds instead: switching silently would hide the replacement.
+    let replaced = app.state.make.ai.clone().filter(|a| !a.is_empty() && !choices.iter().any(|c| &c.name == a));
+    if let Some(saved) = &replaced {
         app.state.make.ai = None;
+        app.toast(
+            trf(
+                "The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.",
+                &[("saved", saved.as_str()), ("used", default.as_str())],
+            ),
+            false,
+        );
     }
     let automatic = trf("Automatic ({name})", &[("name", &default)]);
     let shown = app.state.make.ai.clone().unwrap_or_else(|| automatic.clone());

@@ -1462,3 +1462,4 @@ In this project, {kind}: {choice}.	Neste projeto, {kind}: {choice}.
 Couldn't change the approvals:	Não foi possível mudar as aprovações:
 What the builder may do without asking you, in this project.	O que o agente pode fazer sem perguntar a você, neste projeto.
 Default follows Auto mode: with it on, what can be undone goes ahead and the rest is refused; with it off, the builder asks.	Padrão segue o modo automático: ligado, o que pode ser desfeito segue em frente e o resto é recusado; desligado, o agente pergunta.
+The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.	A IA escolhida para este projeto ({saved}) está desativada ou não está mais configurada. {used} cria no lugar dela.
