@@ -360,7 +360,9 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         beginner: false,
         ..RunOptions::default()
     };
-    let hub = AiHub::new(engine);
+    // A tool runs with the session locked, so the hub reads the saved file: use this session's
+    // config file (the person's own in the app), not the machine's default one.
+    let hub = AiHub::with_stores(engine, ctx.session.config_dir().join("config.toml"), crate::KeyStore::system());
     let mut out = match set.start(&hub, ws, opts)? {
         Started::Running => json!({"project": root.display().to_string(), "started": true}),
         Started::Queued { position } => {
@@ -565,11 +567,32 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut s = craft_anything_engine::testing::session();
-        s.settings.ai = toml::from_str(&format!(
-            "[[backends]]\nname = \"Off\"\nkind = \"anthropic\"\nmodel = \"claude-test\"\nenabled = false\n\n[[backends]]\nname = \"Claude\"\nkind = \"agent_cli\"\nmodel = \"claude-code\"\ncommand = \"{}\"\nenabled = true\n",
-            script.display()
-        ))
-        .unwrap();
+        let mut ai = crate::AiConfig::default();
+        ai.upsert(crate::BackendEntry {
+            config: crate::BackendConfig {
+                name: "Off".into(),
+                kind: crate::BackendKind::Anthropic,
+                model: "claude-test".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: false,
+            },
+            options: Default::default(),
+        });
+        ai.upsert(crate::BackendEntry {
+            config: crate::BackendConfig {
+                name: "Claude".into(),
+                kind: crate::BackendKind::AgentCli,
+                model: "claude-code".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            },
+            options: crate::BackendOptions { command: Some(script.display().to_string()), ..Default::default() },
+        });
+        s.settings.ai = ai.to_table().unwrap();
+        // The tool runs with the session locked; save the same settings where its hub reads them.
+        s.settings.save_to(&s.config_dir().join("config.toml")).unwrap();
         let e = Engine::shared(s, specs());
         let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         ws.set_person(|m| m.builder = Some("Off".into())).unwrap();
