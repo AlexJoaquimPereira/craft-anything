@@ -243,7 +243,8 @@ fn engine(ctx: &Ctx<'_>) -> Option<Arc<Engine>> {
 fn refresh(ctx: &Ctx<'_>, set: &mut RunSet) {
     set.set_limit(ctx.session.settings.build.parallel);
     if let Some(engine) = engine(ctx) {
-        let _ = set.poll(&AiHub::new(engine));
+        let hub = AiHub::with_stores(engine, ctx.session.config_dir().join("config.toml"), crate::KeyStore::system());
+        let _ = set.poll(&hub);
     }
 }
 
@@ -368,7 +369,7 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         Started::Queued { position } => {
             // It starts when a place comes free, whether or not another tool is called.
             drop(set);
-            runs::keep_queue_moving(&runs.0, &hub.engine, QUEUE_TICK);
+            runs::keep_queue_moving(&runs.0, &hub.engine, ctx.session.config_dir().join("config.toml"), QUEUE_TICK);
             json!({"project": root.display().to_string(), "started": false, "queued": position})
         }
     };
