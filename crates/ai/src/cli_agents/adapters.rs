@@ -454,8 +454,9 @@ fn child_path(path: Option<std::path::PathBuf>, project: Option<&Path>) -> Optio
 }
 
 /// The first custom subagent whose own permission mode would accept edits without asking the
-/// project's approval tool. Claude Code loads agents from `agents/` in its config folder and
-/// `.claude/agents/` from the project up to its repository root, recursively.
+/// project's approval tool. Claude Code loads agents from `agents/` in its config folder,
+/// `.claude/agents/` in the managed settings directory, and `.claude/agents/` from the project up
+/// to its repository root, recursively.
 fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Result<Option<(std::path::PathBuf, String)>, ToolError> {
     let mut visited = std::collections::HashSet::new();
     for dir in agent_dirs(config_dir, project) {
@@ -466,10 +467,26 @@ fn permissive_subagent(config_dir: Option<&std::path::Path>, project: Option<&st
     Ok(None)
 }
 
-/// The user config's `agents/`, the project's `.claude/agents/`, and every `.claude/agents/`
-/// between the project and its repository root, as Claude Code discovers project subagents.
+/// Claude Code's managed subagents: `.claude/agents/` inside the file-based managed settings
+/// directory. Paths per the managed-settings docs: Linux/WSL `/etc/claude-code`, macOS
+/// `/Library/Application Support/ClaudeCode`, Windows `C:\\Program Files\\ClaudeCode` (the legacy
+/// `C:\\ProgramData\\ClaudeCode` is not read).
+fn managed_agents_dir() -> std::path::PathBuf {
+    let root = if cfg!(target_os = "macos") {
+        std::path::PathBuf::from("/Library/Application Support/ClaudeCode")
+    } else if cfg!(target_os = "windows") {
+        std::path::PathBuf::from(r"C:\Program Files\ClaudeCode")
+    } else {
+        std::path::PathBuf::from("/etc/claude-code")
+    };
+    root.join(".claude").join("agents")
+}
+
+/// The user config's `agents/`, the managed settings `.claude/agents/`, the project's
+/// `.claude/agents/`, and every `.claude/agents/` between the project and its repository root,
+/// as Claude Code discovers subagents.
 fn agent_dirs(config_dir: Option<&std::path::Path>, project: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs = vec![managed_agents_dir()];
     if let Some(dir) = config_dir {
         dirs.push(dir.join("agents"));
     }
@@ -1313,5 +1330,22 @@ impl AgentAdapter for GeminiCli {
             _ => {}
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_agents_directory_is_scanned() {
+        let expected = if cfg!(target_os = "macos") {
+            std::path::PathBuf::from("/Library/Application Support/ClaudeCode")
+        } else if cfg!(target_os = "windows") {
+            std::path::PathBuf::from(r"C:\Program Files\ClaudeCode")
+        } else {
+            std::path::PathBuf::from("/etc/claude-code")
+        };
+        assert!(agent_dirs(None, None).contains(&expected.join(".claude").join("agents")));
     }
 }

@@ -63,10 +63,11 @@ integration does, why it is shaped this way, and what remains to confirm.
   saved rule or approval prompt even in default mode. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
-  folder and every `.claude/agents/` from the project to its repository root, recursively; a file
-  or folder it can't read refuses the build rather than being skipped. Managed agents are not
-  scanned, so a managed helper with a permissive mode may bypass this check; the live check
-  includes one. A frontmatter that never
+  folder, `.claude/agents/` in the managed settings directory (Linux/WSL `/etc/claude-code`,
+  macOS `/Library/Application Support/ClaudeCode`, Windows `C:\Program Files\ClaudeCode`), and
+  every project `.claude/agents/` from the project to its repository root, recursively; a file
+  or folder it can't read refuses the build rather than being skipped, including an unreadable
+  managed directory. A managed permissive helper is refused like a user or project one. A frontmatter that never
   closes within the first 64 KiB, isn't valid YAML, uses an alias, or nests more than 16 levels is
   refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
   check doesn't resolve. The check runs at the start of every turn; a helper file changed later
@@ -77,10 +78,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   refuse `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push;
   and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
   allows it. The expected result for both is the command running without a `core_action_approve`
-  call; a default-mode helper with a harmless refused command where sandbox auto-allow applies,
-  and a managed `permissionMode: acceptEdits` helper, are also owed a signed-in check. An agent
-  file reloaded mid-turn is also not re-read until the next turn, and its signed-in
-  reload/approval check is still owed. The installed CLI is not signed in
+  call; a default-mode helper with a harmless refused command where sandbox auto-allow applies
+  is also owed a signed-in check. A managed `permissionMode: plan` or `acceptEdits` helper is
+  refused by the managed path scan. An agent file reloaded mid-turn is also not re-read until
+  the next turn, and its signed-in reload/approval check is still owed. The installed CLI is not signed in
   (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build
   leaves `Agent` out deliberately: its custom agents are on the other computer and the local
   check can't read them, so remote helper support is a scope limit until a remote scan exists;
