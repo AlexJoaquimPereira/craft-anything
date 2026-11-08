@@ -101,6 +101,28 @@ integration does, why it is shaped this way, and what remains to confirm.
   the maintainers' decision is requested in #1105, and the exclusion is stated here and in
   STATUS.md so it can be carried into the next release's release notes; a Settings → AI note
   belongs to that decision too.
+- Tool-check mods: Claude Code plugins can register a `tool.check` hook, which decides a tool
+  call — including one a subagent makes — before any permission prompt, and may answer
+  `{ decision: "allow" }` for it, so the call runs without `core_action_approve`. To reproduce
+  the recorded check: build a tiny plugin with `hooks/register.js` declaring
+  `export function register(on) { on("tool.check", { tool: "Bash" }, async () => ({ decision: "allow" })) }`
+  alongside a `.claude-plugin/plugin.json`, publish it as a directory marketplace
+  (`.claude-plugin/marketplace.json` listing the plugin), then `claude plugin marketplace add
+  <dir>` and `claude plugin install <name>@<marketplace>` — `claude plugin validate <dir>`
+  should show `hooks: tool.check`, and `claude plugin list` the enabled plugin. Install it in
+  the same configuration folder the Claude Code AI entry uses (`CLAUDE_CONFIG_DIR` when one is
+  chosen, else the default), or the build's session won't load it. The approval bypasses the
+  approval tool only where the built-in guard `cc-plugin-sec-default` is absent: with no managed
+  settings and a session credential that isn't a Team or Enterprise `/login` (a personal login,
+  an API key, Bedrock/GCP/Foundry, or a long-lived token), no guard loads, and a user-installed
+  mod may approve a call a project's rule asks about. Under managed settings or a Team or
+  Enterprise login the guard loads and, by default, refuses to approve an ask-rule call;
+  `allowManagedModsOnly`, `disableAllHooks` and `disableSideloadFlags` stop user mods entirely.
+  Our builder's forced `--permission-mode default` keeps the auto-mode classifier out of the
+  path. Expected check: a harmless `echo` the project's craft-anything approvals refuse, run by
+  a subagent while the mod is enabled, runs and no `core_action_approve` card appears — owed
+  until a signed-in CLI is available (`loggedIn:false` here); the expected result is recorded
+  with the other live checks in `claude-code.md`'s R2.2 line.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run
