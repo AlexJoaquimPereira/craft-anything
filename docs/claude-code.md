@@ -73,10 +73,12 @@ integration does, why it is shaped this way, and what remains to confirm.
   refuse `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push;
   and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
   allows it. The expected result for both is the command running without a `core_action_approve`
-  call. The installed CLI is not signed in (`loggedIn:false`), so these checks have not been run
-  here. A remote (SSH) Deep build
-  leaves `Agent` out: its custom agents are on the other computer and the local check can't read
-  them, so remote helper agents are a follow-up.
+  call; an agent file reloaded mid-turn is also not re-read until the next turn, and its
+  signed-in reload/approval check is still owed. The installed CLI is not signed in
+  (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build
+  leaves `Agent` out deliberately: its custom agents are on the other computer and the local
+  check can't read them, so remote helper support is a scope limit until a remote scan exists;
+  the maintainers' decision is requested in #1105.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run

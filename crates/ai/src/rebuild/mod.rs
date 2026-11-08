@@ -705,7 +705,13 @@ impl Worker {
             if let Some(host) = remote_host {
                 adapter.check_remote_tool_server(host, &self.stop)?;
             } else {
-                crate::cli_agents::check_builder_tools(adapter.as_ref(), &entry.config.model, &entry.options, &self.stop, !opts.clean_room.unwrap_or(false))?;
+                // `agent_spec` reads this same current session mode for the run; the queued
+                // options can lag a mode the person changed since the run was queued.
+                let deep = {
+                    let session = self.engine.session();
+                    !session.clean_room()
+                };
+                crate::cli_agents::check_builder_tools(adapter.as_ref(), &entry.config.model, &entry.options, &self.stop, deep)?;
                 let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
                 if adapter.signed_in(&program) == Some(false) {
                     return Err(ToolError::new(ErrorCode::BadSettings, not_signed_in(&entry.config.model, adapter.signed_in_before()))
