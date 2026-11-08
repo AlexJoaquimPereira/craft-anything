@@ -825,7 +825,8 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch `bugfix/r2.2-claude-agent-subagents`; PR #1108
 - [ ] Live-check (#1105): a local Deep build's `permissionMode: default` subagent spawn gets no
       approval call, and its file-write or command reaches `core_action_approve` and follows the
-      project's policy
+      project's policy; a saved `Bash(git push *)` allow is expected to bypass the tool (setup in
+      `claude-code.md`, not run)
 
 ### R2.4 Runtime study for apps and games (with consent)
 Owner: maintainers · Status: in progress
