@@ -1029,9 +1029,9 @@ Gaps found while using the app for real projects.
 - [ ] A Clean room build or question must also not resume an API backend's kept transcript:
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
-- [ ] A saved Claude `--resume` in the backend's extra arguments resumes the project's Deep
-      session in a Clean room build or question; refuse it before the agent starts, leaving
-      unrelated arguments alone — claimed: AlexJoaquimPereira, branch bugfix/r2.9-saved-resume
+- [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments can resume the
+      project's Deep session in a Clean room build or question; refuse it before the agent starts,
+      leaving unrelated arguments alone — claimed: AlexJoaquimPereira, branch bugfix/r2.9-saved-resume
 - [x] #504: the builder's plan card can be folded away with its X, or with `project_plan_fold`
       (between builds: a fold during a build can be overwritten by its next save). The steps stay
       in the conversation (`FEED_VERSION` 4, `FeedItem::PlanDismissed`), and a later run's
