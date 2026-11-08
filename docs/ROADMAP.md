@@ -1093,10 +1093,13 @@ An open lane: anyone may take these at any time.
 ### R3.3 Frida sessions for real
 Owner: open · Status: todo
 - [ ] Replace the in-memory session bookkeeping with real attach, resume and detach
-- [ ] The Frida and adb output parsers cut a 64 KiB line at a byte index, so a multibyte character
+- [x] The Frida and adb output parsers cut a 64 KiB line at a byte index, so a multibyte character
       at the boundary keeps the whole line; cut at a character boundary and test both (#1095
-      follow-up)
+      follow-up) — a shared `capped_line` helper walks back to a character boundary; regression
+      tests cover both parsers and the helper
       — claimed: AlexJoaquimPereira, branch bugfix/r3.3-engine-line-cap
+- [ ] `adb` `parse_ps` reads its header line before the 64 KiB cap, so a hostile header can
+      materialize a full token list; cap it like the body lines
 
 ### R3.9 Game assets out
 Owner: open · Status: in progress
