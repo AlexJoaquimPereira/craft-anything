@@ -41,9 +41,12 @@ integration does, why it is shaped this way, and what remains to confirm.
   `core_action_approve`, so Craft Anything's project refusal can't stop it. A user-level custom
   subagent's `PreToolUse` hook can also return allow without a saved rule, so an action the
   project refuses can run without calling the tool. The approval tool only sees actions that
-  reach a prompt. Backend extra arguments that set `--permission-mode`,
-  `--dangerously-skip-permissions`, `--permission-prompts none` or `--agents` are refused for the
-  same reason; inline agent definitions bypass the custom-agent file check.
+  reach a prompt. Working-directory reads may proceed without a saved allow rule, and a Deep
+  build explicitly pre-allows `Read`, `Glob` and `Grep`; those don't need an approval prompt.
+  Backend extra arguments that set `--permission-mode`, `--dangerously-skip-permissions`,
+  `--permission-prompts none` or `--agents`, a bare `--`, or a saved `--tools` naming
+  `Agent`/`Task` when the run has no helpers (a chat, question, Clean room or remote Deep build)
+  are refused for the same reason; inline agent definitions bypass the custom-agent file check.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
   and hand mechanical work to cheaper helpers. Spawning needs no permission, so it isn't in the
   allow list. Claude Code documents that a subagent can only use the session's own tools and that

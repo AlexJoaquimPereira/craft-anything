@@ -238,11 +238,18 @@ pub fn cli_can_start(cli: Option<&Path>, stop: &CancelToken) -> Result<(), ToolE
 
 /// Whether a local build by `agent` can have our tool server: over ACP every agent is handed it,
 /// else its adapter says.
-pub fn check_builder_tools(adapter: &dyn AgentAdapter, agent: &str, options: &BackendOptions, stop: &CancelToken) -> Result<(), ToolError> {
+pub fn check_builder_tools(
+    adapter: &dyn AgentAdapter,
+    agent: &str,
+    options: &BackendOptions,
+    stop: &CancelToken,
+    allow_helpers: bool,
+) -> Result<(), ToolError> {
     if selected_acp_args(adapter, agent, options).is_some() {
         return cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop);
     }
     adapter.check_native_options(options)?;
+    adapter.check_saved_tools(options, allow_helpers)?;
     adapter.check_tool_server(stop)
 }
 
@@ -840,6 +847,7 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         }
     };
     let remote = spec.config.ssh_host.clone().filter(|h| !h.trim().is_empty());
+    let is_remote = remote.is_some();
     // A folder chosen for it is on the computer it runs on: on another one, it's set below.
     let mut adapter = match remote {
         None => spec.adapters.for_backend(&agent, &spec.options),
@@ -855,6 +863,11 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         return nothing_done(&name);
     }
     if let Err(e) = adapter.check_native_options(&spec.options) {
+        let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+        return nothing_done(&name);
+    }
+    let allow_helpers = spec.builder.is_some() && !spec.question && spec.deep && !is_remote;
+    if let Err(e) = adapter.check_saved_tools(&spec.options, allow_helpers) {
         let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
         return nothing_done(&name);
     }
@@ -1824,6 +1837,29 @@ mod tests {
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
     }
 
+    /// A saved --tools naming a helper is valid only for a local Deep build.
+    #[test]
+    fn claude_rejects_saved_agent_tools_outside_a_local_deep_build() {
+        let adapter = adapter_for("claude-code");
+        for args in [
+            vec!["--tools".into(), "Agent".into()],
+            vec!["--tools=Read,Agent".into()],
+            vec!["--tools".into(), "Task".into()],
+            vec!["--tools=Task,Read".into()],
+            vec!["--tools".into(), "Agent(Explore)".into()],
+            vec!["--tools=Task(Plan),Read".into()],
+        ] {
+            let options = BackendOptions { args, ..Default::default() };
+            let err = adapter.check_saved_tools(&options, false).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadSettings);
+            assert!(err.message.contains("Agent") || err.message.contains("Task"), "{}", err.message);
+        }
+        let allowed = BackendOptions { args: vec!["--tools".into(), "Agent,Read".into()], ..Default::default() };
+        assert!(adapter.check_saved_tools(&allowed, true).is_ok());
+        let plain = BackendOptions { args: vec!["--tools=Read,Glob".into()], ..Default::default() };
+        assert!(adapter.check_saved_tools(&plain, false).is_ok());
+    }
+
     /// A saved backend argument must not override the forced default mode or bypass permissions.
     #[test]
     fn claude_refuses_backend_args_that_bypass_default_mode() {
@@ -1836,6 +1872,7 @@ mod tests {
             vec!["--permission-prompts=none".into()],
             vec!["--agents".into(), r#"{"helper":{"permissionMode":"acceptEdits"}}"#.into()],
             vec![r#"--agents={"helper":{"permissionMode":"acceptEdits"}}"#.into()],
+            vec!["--".into()],
         ] {
             let options = BackendOptions { args, ..Default::default() };
             let err = adapter.check_native_options(&options).unwrap_err();
@@ -1907,6 +1944,20 @@ mod tests {
         // A remote run's agents are on the other computer and aren't read here.
         let remote = BackendConfig { ssh_host: Some("other".into()), ..backend };
         assert!(adapter_for("claude-code").check_subagent_modes(&remote, &options, Some(project.path())).is_ok());
+    }
+
+    /// A relative config folder is resolved from the child's working folder, like Claude Code.
+    #[test]
+    fn a_relative_config_dir_is_resolved_against_the_project() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join("claude-config/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("helper.md"), "---\nname: helper\npermissionMode: acceptEdits\n---\n").unwrap();
+        let options = BackendOptions { config_dir: Some("claude-config".into()), ..Default::default() };
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+        assert!(err.message.contains("helper.md"), "{}", err.message);
     }
 
     /// #1108: Claude Code scans `.claude/agents/` recursively and walks up to the repository root;
@@ -2706,7 +2757,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         // before it runs (#72), which its own tests cover.
         let aider = BackendOptions { cli_model: Some("anthropic/claude-sonnet-4".into()), ..Default::default() };
         for (agent, options) in [("gemini-cli", BackendOptions::default()), ("aider", aider), ("no-such-agent", BackendOptions::default())] {
-            assert!(check_builder_tools(adapter_for(agent).as_ref(), agent, &options, &CancelToken::default()).is_ok(), "{agent}");
+            assert!(check_builder_tools(adapter_for(agent).as_ref(), agent, &options, &CancelToken::default(), false).is_ok(), "{agent}");
         }
     }
 

@@ -705,7 +705,7 @@ impl Worker {
             if let Some(host) = remote_host {
                 adapter.check_remote_tool_server(host, &self.stop)?;
             } else {
-                crate::cli_agents::check_builder_tools(adapter.as_ref(), &entry.config.model, &entry.options, &self.stop)?;
+                crate::cli_agents::check_builder_tools(adapter.as_ref(), &entry.config.model, &entry.options, &self.stop, !opts.clean_room.unwrap_or(false))?;
                 let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
                 if adapter.signed_in(&program) == Some(false) {
                     return Err(ToolError::new(ErrorCode::BadSettings, not_signed_in(&entry.config.model, adapter.signed_in_before()))

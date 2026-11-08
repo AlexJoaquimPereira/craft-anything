@@ -75,6 +75,11 @@ pub trait AgentAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Refuse saved native tools that this run mode cannot use. The default allows them.
+    fn check_saved_tools(&self, _options: &BackendOptions, _allow_helpers: bool) -> Result<(), ToolError> {
+        Ok(())
+    }
+
     /// Refuse a custom helper that would act without the approval tool. The default has none.
     /// `project` is the folder the agent runs in; `config` says whether it runs on another computer.
     fn check_subagent_modes(&self, _config: &BackendConfig, _options: &BackendOptions, _project: Option<&Path>) -> Result<(), ToolError> {
@@ -424,6 +429,30 @@ const MAX_YAML_EVENTS: usize = 4096;
 /// doesn't know is left to Claude Code's own default.
 const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto"];
 
+/// Whether saved `--tools` values name a helper tool. Both `<--tools>` and `<--tools=...>` forms
+/// are comma lists.
+fn saved_tools_include_agents(args: &[String]) -> bool {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let list = if arg == "--tools" { args.next().map(String::as_str) } else { arg.strip_prefix("--tools=") };
+        if list.is_some_and(|list| {
+            list.split(',').any(|tool| {
+                let tool = tool.trim();
+                matches!(tool, "Agent" | "Task") || tool.starts_with("Agent(") || tool.starts_with("Task(")
+            })
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A relative config folder means the child's working folder, not ours: Claude Code resolves
+/// `CLAUDE_CONFIG_DIR` and a saved relative folder after changing into the project.
+fn child_path(path: Option<std::path::PathBuf>, project: Option<&Path>) -> Option<std::path::PathBuf> {
+    path.map(|path| if path.is_absolute() { path } else { project.map(|root| root.join(&path)).unwrap_or(path) })
+}
+
 /// The first custom subagent whose own permission mode would accept edits without asking the
 /// project's approval tool. Claude Code loads agents from `agents/` in its config folder and
 /// `.claude/agents/` from the project up to its repository root, recursively.
@@ -670,20 +699,35 @@ impl AgentAdapter for ClaudeCode {
     /// A saved extra argument must not override the default mode or bypass permissions: the build
     /// forces `--permission-mode default` so every prompt reaches `core_action_approve`.
     fn check_native_options(&self, options: &BackendOptions) -> Result<(), ToolError> {
+        let ends_options = options.args.iter().any(|arg| arg == "--");
         let denies_prompts = options.args.iter().any(|arg| arg == "--permission-prompts=none")
             || options.args.windows(2).any(|pair| pair[0] == "--permission-prompts" && pair[1] == "none");
         let defines_agents = options.args.iter().any(|arg| arg == "--agents" || arg.starts_with("--agents="));
-        if denies_prompts
+        if ends_options
+            || denies_prompts
             || defines_agents
             || options.args.iter().any(|arg| matches!(arg.split('=').next().unwrap_or(arg), "--permission-mode" | "--dangerously-skip-permissions"))
         {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
-                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode default so actions that need a prompt reach core_action_approve, and inline agent definitions bypass the file mode check.",
+                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents, or include a bare --: Claude Code builds run in --permission-mode default so actions that need a prompt reach core_action_approve, and inline agent definitions bypass the file mode check.",
             )
             .with_remediation("Remove that argument; put custom helpers in .claude/agents so their modes are checked, and allow what the build needs in the project's approvals instead, then try again."));
         }
         Ok(())
+    }
+
+    /// A local Deep build may bring its own Agent/Task; every other run must not pre-add a
+    /// helper through saved `--tools`, which would outlive the generated tool list.
+    fn check_saved_tools(&self, options: &BackendOptions, allow_helpers: bool) -> Result<(), ToolError> {
+        if allow_helpers || !saved_tools_include_agents(&options.args) {
+            return Ok(());
+        }
+        Err(ToolError::new(
+            ErrorCode::BadSettings,
+            "Backend --tools must not add Agent or Task when this run has no helper agents (a chat, question, Clean room or remote Deep build).",
+        )
+        .with_remediation("Remove Agent/Task from the saved --tools, or use a local Deep build; put custom helpers in .claude/agents, then try again."))
     }
 
     /// Refuse a local custom subagent whose own `permissionMode` would accept edits without
@@ -700,7 +744,7 @@ impl AgentAdapter for ClaudeCode {
             )
             .with_remediation("Remove --add-dir, or move the helpers into .claude/agents so their modes are checked, then try again."));
         }
-        let config_dir = options.config_dir_here().or_else(|| self.config_dir());
+        let config_dir = child_path(options.config_dir_here().or_else(|| self.config_dir()), project);
         let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project)? else { return Ok(()) };
         Err(ToolError::new(
             ErrorCode::BadSettings,
