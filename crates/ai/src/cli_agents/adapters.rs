@@ -707,7 +707,7 @@ impl AgentAdapter for ClaudeCode {
             format!("Claude Code's custom helper agent {} sets permissionMode: {mode}, so its edits would skip this project's approvals.", path.display()),
         )
         .with_remediation(
-            "Change that subagent to permissionMode: default, or remove it, then try again. A default helper's edits that need a prompt go through core_action_approve; saved Claude Code allow rules can still bypass it.",
+            "Change that subagent to permissionMode: default, or remove it, then try again. A default helper's edits that need a prompt go through core_action_approve; saved Claude Code allow rules and a helper's PreToolUse hook can still bypass it.",
         ))
     }
 

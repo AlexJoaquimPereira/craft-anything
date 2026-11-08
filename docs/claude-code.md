@@ -38,8 +38,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   as `manual` on newer CLIs), so a saved `permissions.defaultMode` can't make the builder or a
   default helper skip the approval tool. Saved allow rules are separate: an action they permit,
   such as `Bash(git push *)`, is approved by Claude Code without calling
-  `core_action_approve`, so Craft Anything's project refusal can't stop it. The approval tool
-  only sees actions that reach a prompt. Backend extra arguments that set `--permission-mode`,
+  `core_action_approve`, so Craft Anything's project refusal can't stop it. A user-level custom
+  subagent's `PreToolUse` hook can also return allow without a saved rule, so an action the
+  project refuses can run without calling the tool. The approval tool only sees actions that
+  reach a prompt. Backend extra arguments that set `--permission-mode`,
   `--dangerously-skip-permissions`, `--permission-prompts none` or `--agents` are refused for the
   same reason; inline agent definitions bypass the custom-agent file check.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
@@ -64,10 +66,12 @@ integration does, why it is shaped this way, and what remains to confirm.
   in that turn isn't re-read, so a live run still has to establish Claude Code's mid-session
   reload and approval behavior. A Deep build also refuses backend `--add-dir`, because Claude
   could load helpers from those directories outside the scanned paths. A signed-in live check is
-  still owed for saved allow rules: a project whose Craft Anything approvals refuse
-  `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push. The
-  expected result is that the push runs without a `core_action_approve` call. The installed CLI
-  is not signed in (`loggedIn:false`), so this check has not been run here. A remote (SSH) Deep build
+  still owed for saved allow rules and subagent hooks: a project whose Craft Anything approvals
+  refuse `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push;
+  and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
+  allows it. The expected result for both is the command running without a `core_action_approve`
+  call. The installed CLI is not signed in (`loggedIn:false`), so these checks have not been run
+  here. A remote (SSH) Deep build
   leaves `Agent` out: its custom agents are on the other computer and the local check can't read
   them, so remote helper agents are a follow-up.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
