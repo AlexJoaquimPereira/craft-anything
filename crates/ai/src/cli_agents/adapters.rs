@@ -420,8 +420,10 @@ impl ClaudeCode {
     }
 }
 
-/// The most of an agent definition we read while checking: its YAML frontmatter is at the top.
-const AGENT_FILE_CAP: u64 = 64 * 1024;
+/// How much of an agent file this check reads: the 1 MiB window, or the whole file when it ends
+/// first. A file whose frontmatter closes within the read is checked the normal way; one that
+/// never closes is documentation unless the read filled, which is refused rather than trusted.
+const AGENT_CLOSE_SCAN_CAP: u64 = 1024 * 1024;
 /// Bounds for the nonrecursive event parser: a hostile frontmatter can't recurse or flood it.
 const MAX_YAML_DEPTH: usize = 16;
 const MAX_YAML_EVENTS: usize = 4096;
@@ -451,6 +453,18 @@ fn saved_tools_include_agents(args: &[String]) -> bool {
 /// `CLAUDE_CONFIG_DIR` and a saved relative folder after changing into the project.
 fn child_path(path: Option<std::path::PathBuf>, project: Option<&Path>) -> Option<std::path::PathBuf> {
     path.map(|path| if path.is_absolute() { path } else { project.map(|root| root.join(&path)).unwrap_or(path) })
+}
+
+/// The folder chosen for a run, else the working folder this computer's process runs in — the
+/// folder the child inherits when a spec names no project. The helper-agent scan and the child
+/// process resolve it through this one function so they can't disagree, and a working folder that
+/// can't be resolved fails the run rather than leaving it to be checked in one place and run in
+/// another.
+pub(crate) fn resolved_project(project: Option<&Path>) -> Result<std::path::PathBuf, ToolError> {
+    match project {
+        Some(project) => Ok(project.to_path_buf()),
+        None => std::env::current_dir().map_err(|e| ToolError::io("Couldn't find the working folder this check runs in", e)),
+    }
 }
 
 /// The first custom subagent whose own permission mode would accept edits without asking the
@@ -551,26 +565,49 @@ fn scan_agent_dir(
     Ok(None)
 }
 
-/// The file's first [`AGENT_FILE_CAP`] bytes: enough for the frontmatter, and a huge body can't
-/// stall a build. Lossy decoding keeps a character cut at the cap from hiding the frontmatter.
-/// `metadata` follows symlinks deliberately, so a linked agent file is checked like any other.
-fn read_agent_file(path: &std::path::Path) -> Result<String, ToolError> {
+/// Up to [`AGENT_CLOSE_SCAN_CAP`] of the file, or all of it when the file ends first — one read
+/// through the opened handle, so decisions come from what was read, never from a size taken
+/// before it (`scan_agent_dir` already `stat`s the path). A file that can't be read fails rather
+/// than being skipped.
+fn read_agent_prefix(path: &std::path::Path, file: &mut std::fs::File, limit: u64) -> Result<Vec<u8>, ToolError> {
     use std::io::Read as _;
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes).map_err(|e| agent_read_error(path, &e))?;
+    Ok(bytes)
+}
+
+/// The file's first [`AGENT_CLOSE_SCAN_CAP`] bytes, or all of it when the file ends first, checked
+/// for what Claude Code would load. Lossy decoding keeps a character cut at the cap from splitting
+/// the ASCII `---` markers; `metadata` follows symlinks deliberately, so a linked agent file is
+/// checked like any other.
+fn read_agent_file(path: &std::path::Path) -> Result<String, ToolError> {
     let meta = std::fs::metadata(path).map_err(|e| agent_read_error(path, &e))?;
     if !meta.is_file() {
         return Ok(String::new());
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).map_err(|e| agent_read_error(path, &e))?.take(AGENT_FILE_CAP).read_to_end(&mut bytes).map_err(|e| agent_read_error(path, &e))?;
+    let mut file = std::fs::File::open(path).map_err(|e| agent_read_error(path, &e))?;
+    let bytes = read_agent_prefix(path, &mut file, AGENT_CLOSE_SCAN_CAP)?;
     let text = String::from_utf8_lossy(&bytes);
-    if bytes.len() as u64 >= AGENT_FILE_CAP && !frontmatter_closed(&text) {
+    if frontmatter_closed(&text) {
+        // A helper whose frontmatter closed within the window — its permission modes are all in
+        // the read, and the bounded YAML parser fails closed on anything it can't check — or a
+        // file with no frontmatter at all, whose `---`-started text is documentation.
+        return Ok(text.into_owned());
+    }
+    // The frontmatter opens, but no `---` closes it in everything that was read: Claude Code loads
+    // a helper only from a file whose frontmatter closes, so this looks like documentation — but
+    // when the window filled rather than the file ending, the close could hide beyond the 1 MiB
+    // read and Claude Code would load it either way the file is arranged, so it stays refused.
+    if bytes.len() == AGENT_CLOSE_SCAN_CAP as usize {
         return Err(ToolError::new(
             ErrorCode::BadSettings,
-            format!("The custom agent {} has no closing `---` for its frontmatter within the first {} KiB.", path.display(), AGENT_FILE_CAP / 1024),
+            format!("The custom agent {} has no closing `---` for its frontmatter in the first {:.0} MiB, so this check can't tell documentation from a helper Claude Code would load.", path.display(), AGENT_CLOSE_SCAN_CAP as f64 / (1024.0 * 1024.0)),
         )
         .with_remediation("Add the closing `---` before the prompt, or remove the file, then try again."));
     }
-    Ok(text.into_owned())
+    // Everything after the byte count was read the file has, and no closing `---` is among it:
+    // Claude Code finds no frontmatter either, so this is documentation and gets no modes here.
+    Ok(String::new())
 }
 
 /// Whether the file has no frontmatter, or its opening frontmatter has a closing `---` in the
@@ -748,12 +785,17 @@ impl AgentAdapter for ClaudeCode {
     }
 
     /// Refuse a local custom subagent whose own `permissionMode` would accept edits without
-    /// asking `core_action_approve`. A remote run's agents are on the other computer and aren't
-    /// read here.
+    /// asking `core_action_approve`. With no project chosen the scan walks the working folder the
+    /// run inherits, and a remote run's agents are on the other computer and aren't read here.
     fn check_subagent_modes(&self, config: &BackendConfig, options: &BackendOptions, project: Option<&Path>) -> Result<(), ToolError> {
         if config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
             return Ok(());
         }
+        // No project chosen: the agent runs in the working folder its process inherits, so that's
+        // the folder the scan walks, and the process is started in it in turn (`run_cli` resolves
+        // `run_project` through the same function). A folder that can't be resolved fails here
+        // rather than the scan being checked against fewer folders than the child runs with.
+        let project = resolved_project(project)?;
         if options.args.iter().any(|arg| arg == "--add-dir" || arg.starts_with("--add-dir=")) {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
@@ -761,8 +803,8 @@ impl AgentAdapter for ClaudeCode {
             )
             .with_remediation("Remove --add-dir, or move the helpers into .claude/agents so their modes are checked, then try again."));
         }
-        let config_dir = child_path(options.config_dir_here().or_else(|| self.config_dir()), project);
-        let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), project)? else { return Ok(()) };
+        let config_dir = child_path(options.config_dir_here().or_else(|| self.config_dir()), Some(&project));
+        let Some((path, mode)) = permissive_subagent(config_dir.as_deref(), Some(&project))? else { return Ok(()) };
         Err(ToolError::new(
             ErrorCode::BadSettings,
             format!("Claude Code's custom helper agent {} sets permissionMode: {mode}, so its edits would skip this project's approvals.", path.display()),

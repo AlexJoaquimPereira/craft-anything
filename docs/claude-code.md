@@ -65,11 +65,18 @@ integration does, why it is shaped this way, and what remains to confirm.
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder, `.claude/agents/` in the managed settings directory (Linux/WSL `/etc/claude-code`,
   macOS `/Library/Application Support/ClaudeCode`, Windows `C:\Program Files\ClaudeCode`), and
-  every project `.claude/agents/` from the project to its repository root, recursively; a file
+  every project `.claude/agents/` from the project to its repository root, recursively — or,
+  with no project chosen, the working folder the run inherits, where the child starts in that
+  same resolved folder; a file
   or folder it can't read refuses the build rather than being skipped, including an unreadable
-  managed directory. A managed permissive helper is refused like a user or project one. A frontmatter that never
-  closes within the first 64 KiB, isn't valid YAML, uses an alias, or nests more than 16 levels is
-  refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
+  managed directory. A managed permissive helper is refused like a user or project one. Each agent
+  file is read once, up to 1 MiB: a frontmatter that closes within the read is checked the normal
+  way (the bounded YAML parser still fails closed on anything unreadable), a file with no closing
+  `---` anywhere in it is documentation and is skipped on the assumption Claude Code requires the
+  closing `---` — a live load check for that is still owed (R2.2) — and a file so big the 1 MiB
+  read fills without a close fails closed rather than trusting what it couldn't finish reading. A frontmatter that isn't valid YAML, uses an
+  alias, or nests more than 16 levels is refused too, rather than parsed partially, as is a
+  top-level YAML merge key (`<<`), which this
   check doesn't resolve. The check runs at the start of every turn; a helper file changed later
   in that turn isn't re-read, so a live run still has to establish Claude Code's mid-session
   reload and approval behavior. A local Deep build also refuses backend `--add-dir`, because Claude
@@ -85,7 +92,9 @@ integration does, why it is shaped this way, and what remains to confirm.
   (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build
   leaves `Agent` out deliberately: its custom agents are on the other computer and the local
   check can't read them, so remote helper support is a scope limit until a remote scan exists;
-  the maintainers' decision is requested in #1105.
+  the maintainers' decision is requested in #1105, and the exclusion is stated here and in
+  STATUS.md so it can be carried into the next release's release notes; a Settings → AI note
+  belongs to that decision too.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools
   AskUserQuestion`); the agent uses our `core_person_ask` tool, which shows a card with buttons.
 - Before a build starts, `claude auth status` is checked. If Claude Code isn't signed in, the run

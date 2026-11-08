@@ -866,6 +866,22 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
         return nothing_done(&name);
     }
+    // The folder a local run checks helper agents in and runs in: the chosen project, else this
+    // process's working folder. It is resolved once here, and the one value goes into both the
+    // scan (`check_subagent_modes`, which passes a given folder straight through) and the child's
+    // start folder, so a Deep build with no project folder is scanned where it runs. A working
+    // folder that can't be resolved fails the run here rather than leaving either use without it.
+    let run_project = match spec.project.clone().filter(|_| remote.is_none()) {
+        Some(project) => Some(project),
+        None if spec.builder.is_some() && spec.deep && !is_remote => match adapters::resolved_project(spec.project.as_deref()) {
+            Ok(folder) => Some(folder),
+            Err(e) => {
+                let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+                return nothing_done(&name);
+            }
+        },
+        _ => None,
+    };
     let allow_helpers = spec.builder.is_some() && !spec.question && spec.deep && !is_remote;
     if let Err(e) = adapter.check_saved_tools(&spec.options, allow_helpers) {
         let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
@@ -873,7 +889,7 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     }
     if spec.builder.is_some()
         && spec.deep
-        && let Err(e) = adapter.check_subagent_modes(&spec.config, &spec.options, spec.project.as_deref())
+        && let Err(e) = adapter.check_subagent_modes(&spec.config, &spec.options, run_project.as_deref().or(spec.project.as_deref()))
     {
         let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
         return nothing_done(&name);
@@ -1001,7 +1017,9 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
             }
         })
         .remediation(format!("Install {}, or choose its program in Settings → AI.", display_for(&agent)));
-    if let Some(p) = spec.project.as_ref().filter(|_| remote.is_none()) {
+    // Run where the check checked: the chosen project, or the working folder it resolved for a
+    // Deep build with none (`run_project`); remote runs happen on the other computer's folder.
+    if let Some(p) = run_project.as_ref() {
         proc = proc.cwd(p);
     }
     if adapter.prompt_on_stdin() {
@@ -2002,10 +2020,42 @@ mod tests {
         assert!(err.message.contains("broken.md"), "{}", err.message);
     }
 
-    /// A frontmatter that never closes inside the 64 KiB prefix must fail, not parse truncated
-    /// YAML and miss a permissive mode.
+    /// #1108: a file whose frontmatter never closes isn't a helper Claude Code can load, so it's
+    /// documentation at any size and is skipped; one whose frontmatter closes later is read whole
+    /// and its modes still checked, so a hidden permissive mode is refused all the same.
     #[test]
-    fn an_unclosed_frontmatter_before_the_cap_is_refused() {
+    fn unclosed_frontmatter_is_documentation_unless_a_close_hides_behind_it() {
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let no_close = |bytes: usize| {
+            let mut text = String::from("---\nname: helper\npermissionMode: acceptEdits\n");
+            text.push_str(&"x".repeat(bytes));
+            text
+        };
+        for (name, text) in [("small.md", no_close(5 * 1024)), ("big.md", no_close(70 * 1024))] {
+            let project = tempfile::tempdir().unwrap();
+            let agents = project.path().join(".claude/agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(agents.join(name), text).unwrap();
+            adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap();
+        }
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let mut hidden = String::from("---\nname: helper\n");
+        hidden.push_str(&"x".repeat(70 * 1024));
+        hidden.push_str("\npermissionMode: bypassPermissions\n---\n");
+        std::fs::write(agents.join("hidden.md"), hidden).unwrap();
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
+        assert!(err.message.contains("hidden.md") && err.message.contains("bypassPermissions"), "{}", err.message);
+    }
+
+    /// A frontmatter still open past the scan window can't be proven to be documentation; it may
+    /// hide a helper Claude Code would load, so it fails closed rather than being skipped.
+    #[test]
+    fn an_unclosed_frontmatter_beyond_the_scan_window_is_refused() {
         let backend =
             BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
         let config = tempfile::tempdir().unwrap();
@@ -2013,11 +2063,58 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let agents = project.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
-        let mut text = String::from("---\nname: big\npermissionMode: acceptEdits\n");
-        text.push_str(&"x".repeat(70 * 1024));
-        std::fs::write(agents.join("big.md"), text).unwrap();
+        let mut text = String::from("---\nname: huge\npermissionMode: acceptEdits\n");
+        text.push_str(&"x".repeat(1024 * 1024 + 1024));
+        std::fs::write(agents.join("huge.md"), text).unwrap();
         let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).unwrap_err();
-        assert!(err.message.contains("big.md") && err.message.contains("closing `---`"), "{}", err.message);
+        assert!(err.message.contains("huge.md") && err.message.contains("MiB"), "{}", err.message);
+    }
+
+    /// A Deep build with no project folder scans the working folder its process inherits as if a
+    /// project had been chosen. The scan runs in a child of the test harness: a folder switch is
+    /// global to every test in this binary, and the others don't care to have it flip under them.
+    #[test]
+    fn a_build_without_a_project_folder_checks_the_inherited_working_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("inherited.md"), "---\nname: helper\npermissionMode: acceptEdits\n---\n").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let output = Process::new(&exe)
+            .args(["--exact", "--test-threads=1", "--nocapture", "--", "cli_agents::tests::the_inherited_working_folder_child"])
+            .env("__CRAFT_SCAN_CWD", dir.path())
+            .timeout(Duration::from_secs(60))
+            .stdout_cap(1024 * 1024)
+            .run()
+            .unwrap();
+        let logs = format!("{}\n{}", output.stdout_text(), output.stderr_text());
+        assert!(output.success, "the child scan didn't pass: {logs}");
+        assert!(logs.contains("inherited.md"), "the refusal wasn't for the helper in the inherited folder: {logs}");
+    }
+
+    /// The scan the inherited-folder test runs in its own process (a working-folder change is
+    /// global, so it isn't made inside a shared test process). Without the folder set it passes
+    /// instead of running, so a stray harness run is harmless.
+    #[test]
+    fn the_inherited_working_folder_child() {
+        let Some(inherited) = std::env::var_os("__CRAFT_SCAN_CWD") else { return };
+        std::env::set_current_dir(inherited).unwrap();
+        let backend =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let config = tempfile::tempdir().unwrap();
+        let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
+        let err = adapter_for("claude-code").check_subagent_modes(&backend, &options, None).unwrap_err();
+        println!("Refused the helper in the inherited folder: {}", err.message);
+        assert!(err.message.contains("inherited.md"), "{}", err.message);
+    }
+
+    /// No project chosen resolves the working folder once, and both the scan and the process get
+    /// the same folder from [`resolved_project`](crate::cli_agents::adapters::resolved_project).
+    #[test]
+    fn an_unresolved_project_is_the_working_folder_for_the_check_and_the_process() {
+        let chosen = tempfile::tempdir().unwrap();
+        assert_eq!(adapters::resolved_project(Some(chosen.path())).unwrap(), chosen.path());
+        assert!(adapters::resolved_project(None).unwrap().is_absolute());
     }
 
     /// A top-level YAML merge key can carry a literal `permissionMode`; refuse it rather than

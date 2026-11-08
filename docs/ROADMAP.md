@@ -828,11 +828,14 @@ Owner: open · Status: in progress
       project's policy; a saved `Bash(git push *)` allow or a user-level subagent `PreToolUse`
       hook that allows a refused `echo` or sandbox auto-allow is expected to bypass the tool;
       the managed path scan is expected to refuse a managed `acceptEdits`/`plan` helper; an
-      agent file reloaded mid-turn is not re-read until the next turn (setup in
-      `claude-code.md`, not run)
+      agent file reloaded mid-turn is not re-read until the next turn; an agent file whose
+      frontmatter never closes is expected to load as documentation alone, which is what this
+      check skips it on (setup in `claude-code.md`, not run)
 - [ ] Remote Deep builds: keep `Agent` out until a remote scan of the config and
       `.claude/agents` paths (permissive modes, `--add-dir`, unreadable files) and its tests
-      exist; the maintainers' scope decision is requested in #1105
+      exist; the maintainers' scope decision recording the exclusion is requested in #1105, and
+      the exclusion is stated in STATUS.md and claude-code.md and is to be carried into the next
+      release's release notes (a Settings → AI note goes with it)
 
 ### R2.4 Runtime study for apps and games (with consent)
 Owner: maintainers · Status: in progress
