@@ -90,7 +90,7 @@ pub fn ask(
     };
     let (mut conv, mut from): (Box<dyn Conversation>, AnsweredFrom) = match entry.config.kind {
         BackendKind::AgentCli => {
-            let session = ws.manifest.agent_session_for(&entry.config.model).map(str::to_string);
+            let session = ws.manifest.agent_session_for_mode(&entry.config.model, deep).map(str::to_string);
             if let Some(id) = session.as_deref() {
                 bring_back_session(ws, &entry, id);
             }
@@ -170,6 +170,7 @@ fn forget_lost_session(root: &Path, lost: &str) -> Result<bool, ToolError> {
         return Ok(false);
     }
     now.manifest.agent_session = None;
+    now.manifest.agent_session_deep = None;
     now.save()?;
     Ok(true)
 }
@@ -295,17 +296,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         ws.manifest.agent_session = Some("gone".into());
+        ws.manifest.agent_session_deep = Some(true);
         ws.manifest.last_reply = "Built it.".into();
         ws.save().unwrap();
         assert!(forget_lost_session(&ws.root, "gone").unwrap());
         let now = Workspace::open(&ws.root).unwrap();
         assert_eq!(now.manifest.agent_session, None);
+        assert_eq!(now.manifest.agent_session_deep, None, "the mode goes with the session");
         assert_eq!(now.manifest.last_reply, "Built it.", "nothing else changes");
 
         ws.manifest.agent_session = Some("new-from-a-build".into());
+        ws.manifest.agent_session_deep = Some(false);
         ws.save().unwrap();
         assert!(!forget_lost_session(&ws.root, "gone").unwrap());
-        assert_eq!(Workspace::open(&ws.root).unwrap().manifest.agent_session.as_deref(), Some("new-from-a-build"));
+        let kept = Workspace::open(&ws.root).unwrap();
+        assert_eq!(kept.manifest.agent_session.as_deref(), Some("new-from-a-build"));
+        assert_eq!(kept.manifest.agent_session_deep, Some(false), "a session a build saved since keeps its mode");
 
         assert!(forget_lost_session(&d.path().join("no-such-project"), "gone").is_err(), "an error, never a panic");
     }
