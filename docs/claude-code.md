@@ -36,7 +36,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   own permissions and could change those files another way, so "commands: allow" (Auto mode's
   default) trusts the builder. A build starts Claude Code with `--permission-mode default` (listed
   as `manual` on newer CLIs), so a saved `permissions.defaultMode` can't make the builder or a
-  default helper skip the approval tool. Backend extra arguments that set `--permission-mode`,
+  default helper skip the approval tool. Saved allow rules are separate: an action they permit,
+  such as `Bash(git push *)`, is approved by Claude Code without calling
+  `core_action_approve`, so Craft Anything's project refusal can't stop it. The approval tool
+  only sees actions that reach a prompt. Backend extra arguments that set `--permission-mode`,
   `--dangerously-skip-permissions`, `--permission-prompts none` or `--agents` are refused for the
   same reason; inline agent definitions bypass the custom-agent file check.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
@@ -49,8 +52,8 @@ integration does, why it is shaped this way, and what remains to confirm.
   subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
   Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
   lets a classifier decide, so its writes may not reach `core_action_approve`. A
-  `permissionMode: default` helper keeps the approval path because the build starts in default
-  mode. Plugin agents can't set
+  `permissionMode: default` helper keeps the approval path for actions that prompt because the
+  build starts in default mode; a saved allow rule can still bypass it. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder and every `.claude/agents/` from the project to its repository root, recursively; a file
@@ -60,7 +63,11 @@ integration does, why it is shaped this way, and what remains to confirm.
   check doesn't resolve. The check runs at the start of every turn; a helper file changed later
   in that turn isn't re-read, so a live run still has to establish Claude Code's mid-session
   reload and approval behavior. A Deep build also refuses backend `--add-dir`, because Claude
-  could load helpers from those directories outside the scanned paths. A remote (SSH) Deep build
+  could load helpers from those directories outside the scanned paths. A signed-in live check is
+  still owed for saved allow rules: a project whose Craft Anything approvals refuse
+  `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push. The
+  expected result is that the push runs without a `core_action_approve` call. The installed CLI
+  is not signed in (`loggedIn:false`), so this check has not been run here. A remote (SSH) Deep build
   leaves `Agent` out: its custom agents are on the other computer and the local check can't read
   them, so remote helper agents are a follow-up.
 - Questions: Claude Code's own question tool is disabled for these runs (`--disallowedTools

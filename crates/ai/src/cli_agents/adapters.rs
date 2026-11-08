@@ -679,7 +679,7 @@ impl AgentAdapter for ClaudeCode {
         {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
-                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode default so every prompt reaches core_action_approve, and inline agent definitions bypass the file mode check.",
+                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode default so actions that need a prompt reach core_action_approve, and inline agent definitions bypass the file mode check.",
             )
             .with_remediation("Remove that argument; put custom helpers in .claude/agents so their modes are checked, and allow what the build needs in the project's approvals instead, then try again."));
         }
@@ -707,7 +707,7 @@ impl AgentAdapter for ClaudeCode {
             format!("Claude Code's custom helper agent {} sets permissionMode: {mode}, so its edits would skip this project's approvals.", path.display()),
         )
         .with_remediation(
-            "Change that subagent to permissionMode: default, or remove it, then try again. A default helper's edits go through core_action_approve.",
+            "Change that subagent to permissionMode: default, or remove it, then try again. A default helper's edits that need a prompt go through core_action_approve; saved Claude Code allow rules can still bypass it.",
         ))
     }
 
