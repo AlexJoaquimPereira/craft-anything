@@ -34,9 +34,9 @@ integration does, why it is shaped this way, and what remains to confirm.
   `craft.json`, the inbox, the approvals tool or that variable counts as a system change. These
   raise the bar; they aren't a wall: a builder allowed to run any command runs with the person's
   own permissions and could change those files another way, so "commands: allow" (Auto mode's
-  default) trusts the builder. A build starts Claude Code with `--permission-mode manual` (its
-  default mode), so a saved `permissions.defaultMode` can't make the builder or a default helper
-  skip the approval tool. Backend extra arguments that set `--permission-mode`,
+  default) trusts the builder. A build starts Claude Code with `--permission-mode default` (listed
+  as `manual` on newer CLIs), so a saved `permissions.defaultMode` can't make the builder or a
+  default helper skip the approval tool. Backend extra arguments that set `--permission-mode`,
   `--dangerously-skip-permissions`, `--permission-prompts none` or `--agents` are refused for the
   same reason; inline agent definitions bypass the custom-agent file check.
 - Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
@@ -49,7 +49,7 @@ integration does, why it is shaped this way, and what remains to confirm.
   subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
   Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
   lets a classifier decide, so its writes may not reach `core_action_approve`. A
-  `permissionMode: default` helper keeps the approval path because the build starts in manual
+  `permissionMode: default` helper keeps the approval path because the build starts in default
   mode. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config

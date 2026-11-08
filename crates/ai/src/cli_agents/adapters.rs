@@ -667,8 +667,8 @@ impl AgentAdapter for ClaudeCode {
         cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
     }
 
-    /// A saved extra argument must not override the manual mode or bypass permissions: the build
-    /// forces `--permission-mode manual` so every prompt reaches `core_action_approve`.
+    /// A saved extra argument must not override the default mode or bypass permissions: the build
+    /// forces `--permission-mode default` so every prompt reaches `core_action_approve`.
     fn check_native_options(&self, options: &BackendOptions) -> Result<(), ToolError> {
         let denies_prompts = options.args.iter().any(|arg| arg == "--permission-prompts=none")
             || options.args.windows(2).any(|pair| pair[0] == "--permission-prompts" && pair[1] == "none");
@@ -679,7 +679,7 @@ impl AgentAdapter for ClaudeCode {
         {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
-                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode manual so every prompt reaches core_action_approve, and inline agent definitions bypass the file mode check.",
+                "Backend extra arguments must not set --permission-mode, --dangerously-skip-permissions, --permission-prompts none or --agents: Claude Code builds run in --permission-mode default so every prompt reaches core_action_approve, and inline agent definitions bypass the file mode check.",
             )
             .with_remediation("Remove that argument; put custom helpers in .claude/agents so their modes are checked, and allow what the build needs in the project's approvals instead, then try again."));
         }
@@ -746,7 +746,7 @@ impl AgentAdapter for ClaudeCode {
             // Questions go through our core_person_ask tool, which the app shows as buttons.
             a.extend([
                 "--permission-mode".into(),
-                "manual".into(),
+                "default".into(),
                 "--permission-prompt-tool".into(),
                 format!("mcp__{MCP_NAME}__{APPROVAL_TOOL}"),
                 "--disallowedTools".into(),

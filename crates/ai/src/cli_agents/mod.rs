@@ -1568,7 +1568,7 @@ mod tests {
             assert!(tools.split(',').any(|tool| tool == "Bash"), "{access:?}: {tools}");
             assert!(tools.split(',').any(|tool| tool == "Write"), "{access:?}: {tools}");
             let builder = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, access);
-            assert_eq!(builder[builder.iter().position(|arg| arg == "--permission-mode").unwrap() + 1], "manual", "{access:?}");
+            assert_eq!(builder[builder.iter().position(|arg| arg == "--permission-mode").unwrap() + 1], "default", "{access:?}");
         }
         // #1105: a Deep build can plan in one context and hand work to cheaper helpers. Clean
         // room leaves subagents out, where reads are held to the approval tool.
@@ -1800,7 +1800,7 @@ mod tests {
     fn builder_args_route_permissions_and_questions_to_us() {
         let a = build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "build it", "PRE", &mcp(), None, Access::Build);
         let pos = |f: &str| a.iter().position(|x| x == f).unwrap();
-        assert_eq!(a[pos("--permission-mode") + 1], "manual", "a saved permissive default mode can't reach a helper");
+        assert_eq!(a[pos("--permission-mode") + 1], "default", "a saved permissive default mode can't reach a helper");
         assert_eq!(a[pos("--permission-prompt-tool") + 1], "mcp__craft-anything__core_action_approve");
         assert_eq!(a[pos("--disallowedTools") + 1], "AskUserQuestion");
         assert!(a[pos("--tools") + 1].split(',').any(|tool| tool == "Agent"), "a Deep builder can start subagents");
@@ -1824,9 +1824,9 @@ mod tests {
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
     }
 
-    /// A saved backend argument must not override the forced manual mode or bypass permissions.
+    /// A saved backend argument must not override the forced default mode or bypass permissions.
     #[test]
-    fn claude_refuses_backend_args_that_bypass_manual_mode() {
+    fn claude_refuses_backend_args_that_bypass_default_mode() {
         let adapter = adapter_for("claude-code");
         for args in [
             vec!["--permission-mode".into(), "acceptEdits".into()],
