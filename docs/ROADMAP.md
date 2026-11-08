@@ -826,8 +826,9 @@ Owner: open · Status: in progress
 - [ ] Live-check (#1105): a local Deep build's `permissionMode: default` subagent spawn gets no
       approval call, and its file-write or command reaches `core_action_approve` and follows the
       project's policy; a saved `Bash(git push *)` allow or a user-level subagent `PreToolUse`
-      hook that allows a refused `echo` is expected to bypass the tool; an agent file reloaded
-      mid-turn is not re-read until the next turn (setup in `claude-code.md`, not run)
+      hook that allows a refused `echo`, sandbox auto-allow, or a `plan` helper with auto mode
+      available is expected to bypass the tool; an agent file reloaded mid-turn is not re-read
+      until the next turn (setup in `claude-code.md`, not run)
 - [ ] Remote Deep builds: keep `Agent` out until a remote scan of the config and
       `.claude/agents` paths (permissive modes, `--add-dir`, unreadable files) and its tests
       exist; the maintainers' scope decision is requested in #1105

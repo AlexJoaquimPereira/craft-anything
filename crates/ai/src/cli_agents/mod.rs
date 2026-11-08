@@ -1911,6 +1911,7 @@ mod tests {
         let agents = project.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("default.md"), "---\nname: default\npermissionMode: default\n---\nBody\n").unwrap();
+        std::fs::write(agents.join("plan.md"), "---\nname: plan\npermissionMode: plan\n---\nBody\n").unwrap();
         std::fs::write(agents.join("example.md"), "No frontmatter.\npermissionMode: acceptEdits\n").unwrap();
         assert!(adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).is_ok());
         // The frontmatter is read even when the prompt body is large, and the extension's case

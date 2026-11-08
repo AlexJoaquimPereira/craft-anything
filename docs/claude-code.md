@@ -58,7 +58,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   local Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
   lets a classifier decide, so its writes may not reach `core_action_approve`. A
   `permissionMode: default` helper keeps the approval path for actions that prompt because the
-  build starts in default mode; a saved allow rule can still bypass it. Plugin agents can't set
+  build starts in default mode; a saved allow rule can still bypass it. Sandbox auto-allow may
+  let some sandboxed Bash commands run without a saved rule or approval prompt even in default
+  mode, and when auto mode is available a `permissionMode: plan` helper may run classifier-approved
+  commands without calling the tool. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder and every `.claude/agents/` from the project to its repository root, recursively; a file
@@ -73,8 +76,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   refuse `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push;
   and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
   allows it. The expected result for both is the command running without a `core_action_approve`
-  call; an agent file reloaded mid-turn is also not re-read until the next turn, and its
-  signed-in reload/approval check is still owed. The installed CLI is not signed in
+  call; a default-mode helper with a harmless refused command where sandbox auto-allow applies,
+  and a `permissionMode: plan` helper with auto mode available, are also expected to run without
+  the tool and are owed a signed-in check. An agent file reloaded mid-turn is also not re-read
+  until the next turn, and its signed-in reload/approval check is still owed. The installed CLI is not signed in
   (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build
   leaves `Agent` out deliberately: its custom agents are on the other computer and the local
   check can't read them, so remote helper support is a scope limit until a remote scan exists;
