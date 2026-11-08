@@ -1897,7 +1897,7 @@ mod tests {
             BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
         let config = tempfile::tempdir().unwrap();
         let options = BackendOptions { config_dir: Some(config.path().display().to_string()), ..Default::default() };
-        for mode in ["acceptEdits", "bypassPermissions", "auto"] {
+        for mode in ["acceptEdits", "bypassPermissions", "auto", "plan"] {
             let project = tempfile::tempdir().unwrap();
             let agents = project.path().join(".claude/agents");
             std::fs::create_dir_all(&agents).unwrap();
@@ -1911,7 +1911,6 @@ mod tests {
         let agents = project.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("default.md"), "---\nname: default\npermissionMode: default\n---\nBody\n").unwrap();
-        std::fs::write(agents.join("plan.md"), "---\nname: plan\npermissionMode: plan\n---\nBody\n").unwrap();
         std::fs::write(agents.join("example.md"), "No frontmatter.\npermissionMode: acceptEdits\n").unwrap();
         assert!(adapter_for("claude-code").check_subagent_modes(&backend, &options, Some(project.path())).is_ok());
         // The frontmatter is read even when the prompt body is large, and the extension's case

@@ -427,7 +427,7 @@ const MAX_YAML_DEPTH: usize = 16;
 const MAX_YAML_EVENTS: usize = 4096;
 /// A custom subagent's permission modes that may apply edits without asking us. A mode this build
 /// doesn't know is left to Claude Code's own default.
-const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto"];
+const PERMISSIVE_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "auto", "plan"];
 
 /// Whether saved `--tools` values name a helper tool. Both `<--tools>` and `<--tools=...>` forms
 /// are comma lists.

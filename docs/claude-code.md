@@ -54,18 +54,19 @@ integration does, why it is shaped this way, and what remains to confirm.
   `--permission-prompt-tool`, which is our `core_action_approve` (expected, not yet checked in a
   live subagent run). Chats, questions and Clean room builds leave `Agent` out. Claude Code before
   2.1.63 knows the tool as `Task`; those older CLIs don't get subagents from this change. A custom
-  subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
-  local Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
-  lets a classifier decide, so its writes may not reach `core_action_approve`. A
-  `permissionMode: default` helper keeps the approval path for actions that prompt because the
-  build starts in default mode; a saved allow rule can still bypass it. Sandbox auto-allow may
-  let some sandboxed Bash commands run without a saved rule or approval prompt even in default
-  mode, and when auto mode is available a `permissionMode: plan` helper may run classifier-approved
-  commands without calling the tool. Plugin agents can't set
+  subagent with `permissionMode: acceptEdits`, `bypassPermissions`, `auto` or `plan` is refused
+  before a local Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking
+  us, and `auto`/`plan` with auto mode available can let a classifier approve commands, so their
+  writes may not reach `core_action_approve`. A `permissionMode: default` helper keeps the
+  approval path for actions that prompt because the build starts in default mode; a saved allow
+  rule can still bypass it. Sandbox auto-allow may let some sandboxed Bash commands run without a
+  saved rule or approval prompt even in default mode. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder and every `.claude/agents/` from the project to its repository root, recursively; a file
-  or folder it can't read refuses the build rather than being skipped. A frontmatter that never
+  or folder it can't read refuses the build rather than being skipped. Managed agents are not
+  scanned, so a managed helper with a permissive mode may bypass this check; the live check
+  includes one. A frontmatter that never
   closes within the first 64 KiB, isn't valid YAML, uses an alias, or nests more than 16 levels is
   refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
   check doesn't resolve. The check runs at the start of every turn; a helper file changed later
@@ -77,9 +78,9 @@ integration does, why it is shaped this way, and what remains to confirm.
   and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
   allows it. The expected result for both is the command running without a `core_action_approve`
   call; a default-mode helper with a harmless refused command where sandbox auto-allow applies,
-  and a `permissionMode: plan` helper with auto mode available, are also expected to run without
-  the tool and are owed a signed-in check. An agent file reloaded mid-turn is also not re-read
-  until the next turn, and its signed-in reload/approval check is still owed. The installed CLI is not signed in
+  and a managed `permissionMode: acceptEdits` helper, are also owed a signed-in check. An agent
+  file reloaded mid-turn is also not re-read until the next turn, and its signed-in
+  reload/approval check is still owed. The installed CLI is not signed in
   (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build
   leaves `Agent` out deliberately: its custom agents are on the other computer and the local
   check can't read them, so remote helper support is a scope limit until a remote scan exists;
