@@ -47,7 +47,7 @@ integration does, why it is shaped this way, and what remains to confirm.
   `--permission-prompts none` or `--agents`, a bare `--`, or a saved `--tools` naming
   `Agent`/`Task` when the run has no helpers (a chat, question, Clean room or remote Deep build)
   are refused for the same reason; inline agent definitions bypass the custom-agent file check.
-- Subagents: a Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
+- Subagents: a local Deep build gets Claude Code's `Agent` tool, so the builder can plan in one context
   and hand mechanical work to cheaper helpers. Spawning needs no permission, so it isn't in the
   allow list. Claude Code documents that a subagent can only use the session's own tools and that
   its tool calls are checked against the same permission rules; a call that would prompt is put to
@@ -55,7 +55,7 @@ integration does, why it is shaped this way, and what remains to confirm.
   live subagent run). Chats, questions and Clean room builds leave `Agent` out. Claude Code before
   2.1.63 knows the tool as `Task`; those older CLIs don't get subagents from this change. A custom
   subagent with `permissionMode: acceptEdits`, `bypassPermissions` or `auto` is refused before a
-  Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
+  local Deep build: `acceptEdits` and `bypassPermissions` can apply edits without asking us, and `auto`
   lets a classifier decide, so its writes may not reach `core_action_approve`. A
   `permissionMode: default` helper keeps the approval path for actions that prompt because the
   build starts in default mode; a saved allow rule can still bypass it. Plugin agents can't set
@@ -67,7 +67,7 @@ integration does, why it is shaped this way, and what remains to confirm.
   refused too, rather than parsed partially, as is a top-level YAML merge key (`<<`), which this
   check doesn't resolve. The check runs at the start of every turn; a helper file changed later
   in that turn isn't re-read, so a live run still has to establish Claude Code's mid-session
-  reload and approval behavior. A Deep build also refuses backend `--add-dir`, because Claude
+  reload and approval behavior. A local Deep build also refuses backend `--add-dir`, because Claude
   could load helpers from those directories outside the scanned paths. A signed-in live check is
   still owed for saved allow rules and subagent hooks: a project whose Craft Anything approvals
   refuse `Bash(git push *)`, with Claude Code settings allowing it, and a builder prompt to push;

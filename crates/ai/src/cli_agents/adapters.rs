@@ -740,7 +740,7 @@ impl AgentAdapter for ClaudeCode {
         if options.args.iter().any(|arg| arg == "--add-dir" || arg.starts_with("--add-dir=")) {
             return Err(ToolError::new(
                 ErrorCode::BadSettings,
-                "Backend --add-dir is not supported for a Deep build: Claude could load custom helper agents from those directories without checking their permissionMode.",
+                "Backend --add-dir is not supported for a local Deep build: Claude could load custom helper agents from those directories without checking their permissionMode.",
             )
             .with_remediation("Remove --add-dir, or move the helpers into .claude/agents so their modes are checked, then try again."));
         }
