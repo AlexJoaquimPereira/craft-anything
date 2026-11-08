@@ -582,6 +582,7 @@ mod typed_retries {
         }
     }
 
+    /// A retryable CLI failure is retried without asking for a fresh external session.
     #[test]
     fn transient_failures_retry_without_requiring_an_external_session() {
         for saved in [false, true] {
@@ -604,6 +605,7 @@ mod typed_retries {
         }
     }
 
+    /// Typed setup errors stop at once, even when their text contains a retry hint.
     #[test]
     fn setup_errors_do_not_retry_even_with_a_wait_in_the_message() {
         for kind in [
@@ -625,6 +627,7 @@ mod typed_retries {
         }
     }
 
+    /// Retries stop at the cap, and a cancelled wait sends no further turn.
     #[test]
     fn retries_are_bounded_and_cancelled_waits_send_nothing_more() {
         assert_eq!(RunOptions::default().max_rounds, 6, "room to keep fixing until it works");
@@ -737,6 +740,8 @@ mod typed_retries {
         assert!(error.message.contains(".answer.json"), "the original local failure is retained: {error:?}");
     }
 
+    /// A rate-limited API turn continues its history without repeating the person's message or
+    /// completed tools.
     #[test]
     fn an_api_rate_limit_continues_history_without_repeating_users_or_completed_tools() {
         use crate::agent::tests::{Scripted, turn};
@@ -792,6 +797,7 @@ mod typed_retries {
         }
     }
 
+    /// Write an executable stand-in CLI and start a conversation with it.
     #[cfg(unix)]
     fn executable_cli(ws: &Workspace, model: &str, script: &str) -> crate::cli_agents::CliConversation {
         use std::os::unix::fs::PermissionsExt;
@@ -814,6 +820,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A failed required tool server stops the owned CLI instead of resuming its session.
     #[test]
     fn a_failed_required_tool_server_stops_the_owned_cli_without_resuming_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -840,6 +847,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A plain CLI's non-zero exit is retried by resuming the session it saved.
     #[test]
     fn a_plain_nonzero_cli_exit_resumes_its_saved_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -874,6 +882,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A typed setup error is reported ahead of a non-zero exit.
     #[test]
     fn typed_cli_setup_errors_take_precedence_over_a_nonzero_exit() {
         for (code, kind) in
@@ -894,6 +903,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// OpenCode's typed rate limit is retried with the whole original request.
     #[test]
     fn opencode_retries_a_typed_rate_limit_with_its_whole_original_request() {
         let dir = tempfile::tempdir().unwrap();
@@ -931,6 +941,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// An untyped OpenCode exit keeps its error and stops at the three-retry cap.
     #[test]
     fn an_untyped_opencode_exit_keeps_its_error_and_the_three_retry_cap() {
         let dir = tempfile::tempdir().unwrap();
@@ -2131,6 +2142,7 @@ mod picking_up_a_build {
         }
     }
 
+    /// A saved session records the mode it ran in, and a lost one clears both.
     #[test]
     fn a_session_is_kept_with_the_mode_it_ran_in() {
         let d = tempfile::tempdir().unwrap();

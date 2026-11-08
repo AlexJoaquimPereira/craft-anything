@@ -44,6 +44,7 @@ impl Conversation for NotesDuringPoll {
     }
 }
 
+/// A consumed note is only acknowledged once the turn finishes, so progress isn't read mid-turn.
 #[test]
 fn consumed_notes_wait_for_turn_done_before_accessing_progress() {
     for directory in [false, true] {

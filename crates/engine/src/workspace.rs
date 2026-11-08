@@ -355,6 +355,7 @@ struct CheckRecord {
 }
 
 impl From<CheckRecord> for CheckResult {
+    /// Turn a stored check record into the result the manifest keeps.
     fn from(r: CheckRecord) -> CheckResult {
         let compared = r.similarity.is_some();
         CheckResult {
@@ -462,6 +463,7 @@ impl Manifest {
         self.app_in_root && self.target == TargetRef::None
     }
 
+    /// The manifest for a new project, at the current format version.
     fn new(name: &str, request: &str, target: TargetRef) -> Manifest {
         let now = now_ms();
         Manifest {
@@ -1592,6 +1594,7 @@ mod tests {
         assert!(!copy.join("managed/obj").exists());
     }
 
+    /// Older check records are judged by the fields they have.
     #[test]
     fn checks_from_older_projects_are_judged_as_they_were() {
         let old = |json: &str| serde_json::from_str::<CheckResult>(json).unwrap();
@@ -1627,6 +1630,7 @@ mod tests {
   "last_reply": "Done."
 }"#;
 
+    /// A version-0 manifest opens as current, with its legacy session counting as Deep.
     #[test]
     fn manifests_from_before_versions_open_and_are_saved_as_current() {
         let dir = tempfile::tempdir().unwrap();
@@ -1645,6 +1649,7 @@ mod tests {
         assert_eq!(Workspace::open(dir.path()).unwrap().manifest, ws.manifest);
     }
 
+    /// Approval choices survive an old manifest, a stale save and a copy.
     #[test]
     fn approval_choices_survive_an_old_manifest_a_stale_save_and_a_copy() {
         // A version-2 craft.json (before approvals) opens with none chosen and is saved as current.
@@ -1838,6 +1843,7 @@ mod tests {
         assert!(saved.get("app_in_root").is_none() && saved.get("start_files").is_none(), "a usual project's craft.json is unchanged");
     }
 
+    /// A project's own records are recognized even when the app is the folder.
     #[test]
     fn craft_anythings_records_are_its_own_even_when_the_app_is_the_folder() {
         let d = tempfile::tempdir().unwrap();
@@ -1864,6 +1870,7 @@ mod tests {
         assert_session_migrated(&recorded, Some(false));
     }
 
+    /// Read a literal `craft.json` sample, check both modes and the saved document.
     fn assert_session_migrated(doc: &str, want: Option<bool>) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(MANIFEST), doc).unwrap();

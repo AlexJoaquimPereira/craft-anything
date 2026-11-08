@@ -213,6 +213,7 @@ pub fn detected() -> Vec<Detected> {
     ]
 }
 
+/// A demo workspace with the given fields and no saved session.
 fn workspace(slug: &str, name: &str, request: &str, target: TargetRef, status: Status, age_min: u64) -> Workspace {
     let at = craft_anything_engine::inbox::now_ms().saturating_sub(age_min * 60_000);
     Workspace {

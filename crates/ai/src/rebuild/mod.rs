@@ -1118,6 +1118,8 @@ impl Worker {
         ws.save()
     }
 
+    /// Run one turn, retrying what the adapter calls retryable, and keep the session it reports
+    /// with the mode this run started in.
     fn turn_with_wait(
         &mut self,
         ws: &mut Workspace,
