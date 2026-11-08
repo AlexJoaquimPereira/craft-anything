@@ -1230,9 +1230,9 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-dotnet-data-bounds-20261107
 - [x] SQLite TEXT values cut at the 4 KiB cap can end in a spurious U+FFFD when the cut lands
       inside a character; cut at a UTF-8/UTF-16 boundary and keep the `truncated` flag
-      — tests cover a UTF-8 character, a UTF-16 surrogate pair and a UTF-16 continuation-like
-      byte at the cut; invalid bytes keep their lossy prefix. Claimed: AlexJoaquimPereira,
-      branch bugfix/r3.12-sqlite-text-cap
+      — tests cover a UTF-8 character, a valid and an unpaired UTF-16 surrogate, a UTF-16
+      continuation-like byte, a pure invalid prefix, and an incomplete tail after a complete
+      invalid byte. Claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-text-cap
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104

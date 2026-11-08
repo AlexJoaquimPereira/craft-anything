@@ -795,9 +795,17 @@ fn encoded_text_value(slice: &[u8], encoding: &str) -> CellValue {
             let (pairs, _) = take.as_chunks::<2>();
             let mut units: Vec<u16> =
                 pairs.iter().map(|&pair| if encoding == "utf-16le" { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) }).collect();
-            // A cut inside a surrogate pair leaves the high half alone: drop it rather than
-            // render a replacement character that wasn't in the value.
-            if truncated && units.last().is_some_and(|u| (0xD800..=0xDBFF).contains(u)) {
+            // A cut inside a surrogate pair leaves the high half alone: drop it only when the
+            // next source unit confirms the pair. An unpaired high surrogate is malformed input
+            // and keeps its lossy marker.
+            let next_is_low = slice
+                .get(bytes..bytes + 2)
+                .and_then(|pair| match pair {
+                    [a, b] => Some(if encoding == "utf-16le" { u16::from_le_bytes([*a, *b]) } else { u16::from_be_bytes([*a, *b]) }),
+                    _ => None,
+                })
+                .is_some_and(|u| (0xDC00..=0xDFFF).contains(&u));
+            if truncated && next_is_low && units.last().is_some_and(|u| (0xD800..=0xDBFF).contains(u)) {
                 units.pop();
             }
             let mut text = String::from_utf16_lossy(&units);
@@ -808,13 +816,20 @@ fn encoded_text_value(slice: &[u8], encoding: &str) -> CellValue {
         }
         _ => {
             let take = slice.get(..cut).unwrap_or_default();
-            // A cut can land inside a character: `from_utf8` reports an incomplete trailing
-            // sequence (not an invalid byte), and its `valid_up_to` is the boundary to keep.
-            // Genuinely invalid bytes keep the lossy prefix they had before.
+            // A cut can land inside a character. Walk past complete invalid sequences (they keep
+            // their replacement characters), and trim only a trailing sequence that is
+            // incomplete.
+            let mut pos = 0;
             let end = if truncated {
-                match std::str::from_utf8(take) {
-                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                    _ => cut,
+                loop {
+                    match std::str::from_utf8(take.get(pos..).unwrap_or_default()) {
+                        Ok(_) => break cut,
+                        Err(e) if e.error_len().is_none() => break pos + e.valid_up_to(),
+                        Err(e) => match e.error_len() {
+                            Some(n) => pos += e.valid_up_to() + n,
+                            None => break pos + e.valid_up_to(),
+                        },
+                    }
                 }
             } else {
                 cut
@@ -1230,6 +1245,25 @@ mod tests {
         assert!(!text.contains(char::REPLACEMENT_CHARACTER));
     }
 
+    /// A high surrogate at the cut is dropped only when the next source unit is its low half;
+    /// an unpaired one is malformed input and keeps its lossy marker.
+    #[test]
+    fn a_truncated_utf16_unpaired_high_surrogate_is_kept_lossily() {
+        let mut bytes = Vec::new();
+        for _ in 0..(MAX_TEXT / 2 - 1) {
+            bytes.extend_from_slice(&0x0061u16.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0xD83Du16.to_le_bytes());
+        bytes.extend_from_slice(&0x0062u16.to_le_bytes());
+        bytes.extend_from_slice(&0x0063u16.to_le_bytes());
+        let CellValue::Text { text, truncated } = encoded_text_value(&bytes, "utf-16le") else {
+            panic!("a TEXT value");
+        };
+        assert!(truncated);
+        assert_eq!(text.chars().count(), MAX_TEXT / 2);
+        assert_eq!(text.chars().last(), Some(char::REPLACEMENT_CHARACTER));
+    }
+
     /// Invalid bytes before the cut keep their lossy prefix; only an incomplete trailing character
     /// is dropped.
     #[test]
@@ -1241,6 +1275,24 @@ mod tests {
         assert!(truncated);
         assert_eq!(text.chars().count(), MAX_TEXT);
         assert!(text.chars().all(|c| c == char::REPLACEMENT_CHARACTER));
+    }
+
+    /// A complete invalid byte before the trailing incomplete sequence keeps its replacement,
+    /// while the incomplete tail is still trimmed.
+    #[test]
+    fn an_incomplete_tail_is_trimmed_after_a_complete_invalid_byte() {
+        let mut bytes = vec![0x80];
+        bytes.extend_from_slice(&vec![b'a'; MAX_TEXT - 2]);
+        bytes.extend_from_slice("é".as_bytes());
+        bytes.extend_from_slice(b"tail");
+        let CellValue::Text { text, truncated } = encoded_text_value(&bytes, "utf-8") else {
+            panic!("a TEXT value");
+        };
+        assert!(truncated);
+        assert_eq!(text.chars().count(), MAX_TEXT - 1);
+        assert_eq!(text.chars().next(), Some(char::REPLACEMENT_CHARACTER));
+        assert_eq!(text.chars().last(), Some('a'));
+        assert_eq!(text.matches(char::REPLACEMENT_CHARACTER).count(), 1);
     }
 
     /// A UTF-16 cut is not a UTF-8 cut: a byte in the continuation range after the cut must not
