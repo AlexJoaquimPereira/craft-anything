@@ -749,18 +749,24 @@ impl Worker {
         if !api_loop && ws.manifest.agent_session_by.as_deref() != Some(entry.config.model.as_str()) {
             ws.manifest.agent_session = ws.manifest.agent_session_for(&entry.config.model).map(str::to_string);
             ws.manifest.agent_session_by = Some(entry.config.model.clone());
+            if ws.manifest.agent_session.is_none() {
+                ws.manifest.agent_session_deep = None;
+            }
             ws.save()?;
         }
-        // A coding agent on this computer whose session the project keeps a copy of (#451).
-        let keeper = (!api_loop && !remote).then(|| opts.adapters.for_backend(&entry.config.model, &entry.options));
-        if let Some(a) = &keeper {
-            self.restore_session(ws, a.as_ref());
-        }
-        self.step(ws, Step::Build, Status::Building, "Getting the builder ready…")?;
+        // The run's mode comes from the same read as the resume decision: a settings change while
+        // the run starts can't make the brief, the tool server and the recorded session disagree.
         let spec = self.agent_spec(ws, &entry, opts);
+        let deep = spec.deep;
         // A session from the other mode is not resumed (it may have read the original there),
         // so the builder needs the brief as if it had none.
         let resumed = spec.resume.is_some();
+        // A coding agent on this computer whose session the project keeps a copy of (#451).
+        let keeper = (!api_loop && !remote).then(|| opts.adapters.for_backend(&entry.config.model, &entry.options));
+        if resumed && let Some(a) = &keeper {
+            self.restore_session(ws, a.as_ref());
+        }
+        self.step(ws, Step::Build, Status::Building, "Getting the builder ready…")?;
         // A coding agent that never saved a session starts over, so it needs the brief.
         let has_history = resumable && (api_loop || resumed);
         let mut agent: Box<dyn Conversation> = match api {
@@ -769,7 +775,7 @@ impl Worker {
         };
         // The builder's tool server is started in this run's mode (`--deep` or `--clean-room`).
         let s = self.engine.session();
-        let (deep, ghidra) = (!s.clean_room(), s.settings.ghidra_launcher().is_some());
+        let ghidra = s.settings.ghidra_launcher().is_some();
         let image_model = s.settings.assets.image_model.clone();
         drop(s);
         let cx = BriefCx { ws, deep, ghidra, editor: self.editor.as_deref(), assets: self.assets, image_model: image_model.as_deref() };
@@ -815,7 +821,7 @@ impl Worker {
         }
         let mut refinements = 0;
         // Deep mode on a program: decompiling is required, so a build turn without any gets one reminder.
-        let must_decompile = !self.engine.session().clean_room() && matches!(ws.manifest.target, TargetRef::Local { .. });
+        let must_decompile = deep && matches!(ws.manifest.target, TargetRef::Local { .. });
         let mut reminded = false;
         // The builder finished and only the check didn't: the build is there to check.
         let mut only_check = carrying_on && !first && opts.message.is_none() && ws.manifest.awaiting_check;

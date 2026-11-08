@@ -57,6 +57,12 @@ pub struct Answered {
     pub builder_notice: Option<String>,
 }
 
+/// Where a question's answer comes from: the builder's session only when the project has one for
+/// this mode (the caller filters it) and the adapter can continue it; otherwise the files.
+fn answered_from(session: Option<&str>, resumes: bool) -> AnsweredFrom {
+    if session.is_some() && resumes { AnsweredFrom::BuildersSession } else { AnsweredFrom::TheFiles }
+}
+
 /// Answer `question` about `ws` (see the module docs), with the person's `settings` (taken from
 /// the caller, which may hold the session: a tool does while it runs, so locking it here would
 /// wait forever). Blocks until it's answered, `cancel` is set, or [`WAIT`] passes: call it off
@@ -97,7 +103,7 @@ pub fn ask(
             // Only a native adapter that resumes can answer from a copy of the builder's chat.
             // Copilot's ACP question starts fresh, even when the project has a saved session id.
             let native_session = crate::cli_agents::adapter_for(&entry.config.model).resumes();
-            let from = if session.is_some() && native_session { AnsweredFrom::BuildersSession } else { AnsweredFrom::TheFiles };
+            let from = answered_from(session.as_deref(), native_session);
             let spec = CliSpec {
                 question: true,
                 deep,
@@ -287,6 +293,22 @@ mod tests {
     fn a_question_is_told_its_missing_tools_are_not_the_builds() {
         assert!(PREAMBLE.contains("never report tools as disconnected"));
         assert!(PREAMBLE.contains("may still be running"));
+    }
+
+    /// The user-visible half of R2.9: a Deep session isn't used for a Clean room question, and an
+    /// adapter that can't resume answers from the files even when the mode matches.
+    #[test]
+    fn a_question_answers_from_the_session_only_in_the_mode_it_was_saved_in() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+        ws.manifest.agent_session = Some("s1".into());
+        ws.manifest.agent_session_by = Some("claude-code".into());
+        ws.manifest.agent_session_deep = Some(true);
+        let deep = ws.manifest.agent_session_for_mode("claude-code", true);
+        assert_eq!(answered_from(deep, true), AnsweredFrom::BuildersSession);
+        let clean = ws.manifest.agent_session_for_mode("claude-code", false);
+        assert_eq!(answered_from(clean, true), AnsweredFrom::TheFiles, "a Deep session isn't used in Clean room");
+        assert_eq!(answered_from(deep, false), AnsweredFrom::TheFiles, "an adapter that can't resume answers from the files");
     }
 
     /// A question that finds the builder's session missing forgets it, unless a build has saved
