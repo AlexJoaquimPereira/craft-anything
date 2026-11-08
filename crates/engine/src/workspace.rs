@@ -78,10 +78,10 @@ fn copy_tree(from: &Path, to: &Path, skip: &dyn Fn(&Path) -> bool, depth: usize)
 }
 
 /// The current `craft.json` format version. Bumping it means appending a step to [`MANIFEST_STEPS`].
-pub const MANIFEST_VERSION: u32 = 3;
+pub const MANIFEST_VERSION: u32 = 4;
 
 /// The steps that bring an older `craft.json` forward; step `i` goes from version `i` to `i + 1`.
-const MANIFEST_STEPS: &[versioned::Step<Value>] = &[manifest_v0_to_v1, manifest_v1_to_v2, manifest_v2_to_v3];
+const MANIFEST_STEPS: &[versioned::Step<Value>] = &[manifest_v0_to_v1, manifest_v1_to_v2, manifest_v2_to_v3, manifest_v3_to_v4];
 const _: () = assert!(MANIFEST_STEPS.len() == MANIFEST_VERSION as usize, "one step per craft.json version");
 
 /// Version 0 (no `version` field) has the same shape as version 1; only the number is new.
@@ -101,6 +101,18 @@ fn manifest_v1_to_v2(doc: &mut Value) -> Result<(), String> {
 /// mode again), opens such a project read-only instead.
 fn manifest_v2_to_v3(doc: &mut Value) -> Result<(), String> {
     if doc.is_object() { Ok(()) } else { Err("the manifest isn't a JSON object".into()) }
+}
+
+/// Version 4 adds the mode a saved builder session ran in (`agent_session_deep`). A version-3
+/// manifest predates the field; a session it saved is the legacy case this build treats as Deep,
+/// so the step fills `true` for it. A mode an early build of this change already wrote is kept.
+fn manifest_v3_to_v4(doc: &mut Value) -> Result<(), String> {
+    let obj = doc.as_object_mut().ok_or("the manifest isn't a JSON object")?;
+    let has_session = obj.get("agent_session").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    if has_session && !obj.contains_key("agent_session_deep") {
+        obj.insert("agent_session_deep".into(), Value::Bool(true));
+    }
+    Ok(())
 }
 
 /// Read a `craft.json` document of any version this build understands. A newer manifest is read
@@ -1621,6 +1633,8 @@ mod tests {
         std::fs::write(dir.path().join(MANIFEST), MANIFEST_V0).unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         assert_eq!(ws.manifest.version, MANIFEST_VERSION);
+        assert_eq!(ws.manifest.agent_session_deep, Some(true), "a session from before the mode was kept counts as Deep");
+        assert_eq!(ws.manifest.agent_session_for_mode("claude-code", false), None);
         assert_eq!(ws.manifest.status, Status::Ready);
         assert_eq!(ws.manifest.asset_budget_usd, ASSET_BUDGET_USD);
         assert!(!ws.manifest.generate_assets, "assets are generated only once the person turns it on");
@@ -1633,15 +1647,15 @@ mod tests {
 
     #[test]
     fn approval_choices_survive_an_old_manifest_a_stale_save_and_a_copy() {
-        // A version-2 craft.json (before approvals) opens with none chosen and is saved as version 3.
+        // A version-2 craft.json (before approvals) opens with none chosen and is saved as current.
         let dir = tempfile::tempdir().unwrap();
         let v2 = MANIFEST_V0.replacen('{', r#"{ "version": 2,"#, 1);
         std::fs::write(dir.path().join(MANIFEST), &v2).unwrap();
         let mut run = Workspace::open(dir.path()).unwrap();
-        assert_eq!((run.manifest.version, run.manifest.approvals.is_empty(), run.is_read_only()), (3, true, false));
+        assert_eq!((run.manifest.version, run.manifest.approvals.is_empty(), run.is_read_only()), (MANIFEST_VERSION, true, false));
         run.save().unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join(MANIFEST)).unwrap()).unwrap();
-        assert_eq!(saved["version"], 3);
+        assert_eq!(saved["version"], MANIFEST_VERSION);
         assert!(saved.get("approvals").is_none(), "nothing chosen, nothing written");
         // The person chooses while a run holds an older copy; the run's save keeps the choice.
         Workspace::open(dir.path())
@@ -1838,6 +1852,30 @@ mod tests {
         if cfg!(windows) {
             assert!(ws.is_own_record(&ws.root.join("CRAFT.JSON")), "paths on Windows ignore case");
         }
+    }
+
+    /// R2.9: version 3 predates the saved session's mode; a session is migrated as Deep, while a
+    /// mode an early build of the change already wrote is kept.
+    #[test]
+    fn a_version_3_session_is_migrated_as_deep_without_overwriting_a_recorded_mode() {
+        let v3 = MANIFEST_V0.replacen('{', r#"{ "version": 3,"#, 1);
+        assert_session_migrated(&v3, Some(true));
+        let recorded = v3.replace(r#""agent_session": "abc","#, r#""agent_session": "abc", "agent_session_deep": false,"#);
+        assert_session_migrated(&recorded, Some(false));
+    }
+
+    fn assert_session_migrated(doc: &str, want: Option<bool>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MANIFEST), doc).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        assert_eq!((ws.manifest.version, ws.manifest.agent_session_deep), (MANIFEST_VERSION, want));
+        let deep = ws.manifest.agent_session_for_mode("claude-code", true);
+        let clean = ws.manifest.agent_session_for_mode("claude-code", false);
+        assert_eq!((deep, clean), if want == Some(false) { (None, Some("abc")) } else { (Some("abc"), None) });
+        ws.save().unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join(MANIFEST)).unwrap()).unwrap();
+        assert_eq!(saved["version"], MANIFEST_VERSION);
+        assert_eq!(saved["agent_session_deep"], want == Some(true));
     }
 
     /// #469: a saved session is only for the agent that saved it.
