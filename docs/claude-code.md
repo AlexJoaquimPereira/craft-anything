@@ -60,7 +60,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   writes may not reach `core_action_approve`. A `permissionMode: default` helper keeps the
   approval path for actions that prompt because the build starts in default mode; a saved allow
   rule can still bypass it. Sandbox auto-allow may let some sandboxed Bash commands run without a
-  saved rule or approval prompt even in default mode. Plugin agents can't set
+  saved rule or approval prompt even in default mode, and wherever no managed settings or a Team
+  or Enterprise session credential controls it, an installed tool-check mod can approve a subagent
+  call itself, without calling `core_action_approve`, so the project's refusal doesn't bind that
+  call either. Plugin agents can't set
   `permissionMode` (Claude Code ignores it there), and the check runs on every turn, so an agent
   added mid-build is caught before the next turn. The check scans `agents/` in the chosen config
   folder, `.claude/agents/` in the managed settings directory (Linux/WSL `/etc/claude-code`,
@@ -86,7 +89,10 @@ integration does, why it is shaped this way, and what remains to confirm.
   and a harmless `echo` the project refuses, with a user-level subagent `PreToolUse` hook that
   allows it. The expected result for both is the command running without a `core_action_approve`
   call; a default-mode helper with a harmless refused command where sandbox auto-allow applies
-  is also owed a signed-in check. A managed `permissionMode: plan` or `acceptEdits` helper is
+  is also owed a signed-in check. So is the tool-check mod path: a harmless `echo` the project
+  refuses, run by a subagent while an installed tool-check mod is installed, is expected to run
+  without `core_action_approve`, which is recorded here as the expected result until it can be
+  repeated for real. A managed `permissionMode: plan` or `acceptEdits` helper is
   refused by the managed path scan. An agent file reloaded mid-turn is also not re-read until
   the next turn, and its signed-in reload/approval check is still owed. The installed CLI is not signed in
   (`loggedIn:false`), so these checks have not been run here. A remote (SSH) Deep build

@@ -830,7 +830,9 @@ Owner: open · Status: in progress
       the managed path scan is expected to refuse a managed `acceptEdits`/`plan` helper; an
       agent file reloaded mid-turn is not re-read until the next turn; an agent file whose
       frontmatter never closes is expected to load as documentation alone, which is what this
-      check skips it on (setup in `claude-code.md`, not run)
+      check skips it on; and with an installed tool-check mod, a harmless `echo` the project
+      refuses is expected to run inside a subagent without `core_action_approve` (setup in
+      `claude-code.md`, not run)
 - [ ] Remote Deep builds: keep `Agent` out until a remote scan of the config and
       `.claude/agents` paths (permissive modes, `--add-dir`, unreadable files) and its tests
       exist; the maintainers' scope decision recording the exclusion is requested in #1105, and
