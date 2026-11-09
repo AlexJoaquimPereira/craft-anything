@@ -1068,10 +1068,15 @@ Gaps found while using the app for real projects.
 - [x] The shared investigation chat (`SharedConversation`) doesn't continue a Deep chat's agent
       session once the chat is in Clean room; Clean room to Deep still continues — claimed: rmsff,
       branch fix/r2.9-shared-chat-mode
-- [ ] A Clean room build or question must also not resume an API backend's kept transcript:
+- [x] A Clean room build or question must also not resume an API backend's kept transcript:
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
-      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
+      — an API transcript records the mode it ran in (`TRANSCRIPT_VERSION` 2); one from the other
+      mode, or a version-1 one (counts as Deep), isn't resumed, and a no-message run studies again
+      instead of carrying on. Claimed: AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
+- [ ] A coding agent's saved session from the other mode still counts as carrying on
+      (`builder_started()` is mode-unaware), so a CLI mode switch can skip the study; gate it the
+      same way the API transcript is gated
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths

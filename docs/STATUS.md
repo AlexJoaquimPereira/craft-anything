@@ -377,7 +377,8 @@ launch or preview was run for this documentation correction.
   resume were confirmed by the person using the app. Other agent programs
   without an adapter get plain text in and out. API-key
   backends (Anthropic, OpenRouter, OpenAI, Gemini through a Google AI Studio key, local; Kimi K3.1 Pro through OpenRouter is offered by Detect; a backend chosen as the Extractor takes a Deep-mode game's own files out into `app/Original/` after the study) build with our own loop and the Build tools,
-  trim and summarise long conversations and keep them in `transcript.json`; no live API build has
+  trim and summarise long conversations and keep them in `transcript.json`, resumed only in the
+  mode that saved it (one saved before the mode was kept counts as Deep); no live API build has
   been run yet.
 - Website checks compare the start page and up to 12 linked pages at the configured widths; the
   start page's menus, pop-ups and tabs are opened on the build too and compared in the note (the
