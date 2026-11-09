@@ -1141,9 +1141,11 @@ Gaps found while using the app for real projects.
       mode, or a version-1 one (counts as Deep), isn't resumed. A same-mode continuation keeps its
       transcript and carries on; a mismatch studies again from the brief. Claimed:
       AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
-- [ ] Study can still be skipped after a mode switch: a coding agent's `builder_started()` is
-      mode-unaware, and an API follow-up message with an existing capture leaves `first` false even
-      when the transcript was rejected. Gate both on the run's mode
+- [x] Study can still be skipped after a mode switch: a coding agent's `builder_started()` was
+      mode-unaware, and an API follow-up message with an existing capture left `first` false even
+      when the transcript was rejected. Gate both on the run's mode — `builder_session_in` matches
+      the saved session's mode, and a run studies again when its only kept conversation is in the
+      other mode; a follow-up with no kept conversation keeps its old path
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-mode-switch-study
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
