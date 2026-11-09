@@ -1297,6 +1297,7 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-sqlite-without-rowid-added-columns
 - [ ] Fill added SQLite columns whose DEFAULT is a hex integer or a literal in parentheses
       (`DEFAULT 0x10`, `DEFAULT (5)`); they show NULL with a note today.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-added-defaults
 - [ ] Give filled-in SQLite defaults their column's affinity: `t TEXT DEFAULT 5` reads '5' in
       SQLite and 5 here. (A REAL column's default already reads as a REAL.)
 - [x] Whole numbers in SQLite REAL columns read as REAL: SQLite stores a REAL with no fractional
