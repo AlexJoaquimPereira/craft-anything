@@ -1356,10 +1356,14 @@ Owner: open · Status: in progress
       `DEFAULT '7'` as 7 and `DEFAULT 5.0` as 5; a REAL column reads `DEFAULT '1.5'` as 1.5; a BLOB
       or untyped column, and an ANY column in a STRICT table, keep the literal as written.
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-default-affinity
-- [ ] Fill added SQLite columns whose DEFAULT is a bare or double-quoted word (`DEFAULT abc`,
+- [x] Fill added SQLite columns whose DEFAULT is a bare or double-quoted word (`DEFAULT abc`,
       `DEFAULT "abc"`), a signed string (`DEFAULT -'5'`) or a number with digit separators
-      (`DEFAULT 1_000`); they show NULL with a note today.
+      (`DEFAULT 1_000`); they show NULL with a note today. Bare and double-quoted words are text
+      constants; a signed numeric string and single digit separators take the column's affinity,
+      and a separator-bearing REAL uses SQLite's REAL text form.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-default-literals
+- [ ] Read a TEXT column's REAL default as SQLite does: `DEFAULT 1e3` and `DEFAULT 5.` are
+      '1000.0' and '5.0' in SQLite, while non-separated reals keep the schema's text here.
 - [x] Whole numbers in SQLite REAL columns read as REAL: SQLite stores a REAL with no fractional
       part as an integer and turns it back into a REAL when it reads the column, so a REAL, FLOAT
       or DOUBLE column holding 1.0 shows 1.0 instead of 1.
