@@ -1397,6 +1397,7 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-pe-empty-version-strings
 - [ ] Read PE version strings stored as binary (wType 0), which some linkers write; they're
       dropped today (`FileDescription` in `pthreadVC2.dll`).
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-pe-binary-version-strings
 - [x] Decode inline source-map data URLs without treating their URL fragments as payload; recognize case-insensitive scheme and base64 markers.
       — claimed: Afloat16, branch bugfix/r3.12-source-map-data-url-fragment
 - [x] Accept only valid WebAssembly names when reporting custom-section debug and source map URLs.
