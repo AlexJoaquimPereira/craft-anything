@@ -1487,7 +1487,7 @@ Owner: open · Status: in progress
       marks the rowid alias.
       — claimed: Plastic-time, branch bugfix/r3.12-sqlite-create-table-comments
 - [ ] Keep the comma inside a SQLite type's parentheses: `DECIMAL(10, 2)` is listed as
-      `DECIMAL(10 2)`.
+      `DECIMAL(10 2)`. — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-type-comma
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
