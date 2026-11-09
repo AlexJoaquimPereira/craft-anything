@@ -1377,24 +1377,18 @@ fn literal_value(tokens: &[&str], affinity: Affinity, allow_words: bool) -> Opti
     } else {
         token.to_owned()
     };
-    let separated = number.contains('_');
     let clean = unseparated_number(&number)?;
     let integer = number_kind(&clean)?;
-    let (minus, unsigned) = match clean.strip_prefix('-') {
-        Some(unsigned) => (true, unsigned),
-        None => (false, clean.strip_prefix('+').unwrap_or(&clean)),
-    };
     match affinity {
-        // An integer that fits in 64 bits is written plainly (`007` reads '7'); any other number
-        // keeps the schema's text, with a minus sign but not a plus. A separator-bearing real is
-        // written in SQLite's REAL text form; the schema's text is not the REAL it reads.
-        Affinity::Text => Some(match unsigned.parse::<i64>() {
-            Ok(n) if integer => integer_default(if minus { n.saturating_neg() } else { n }, affinity),
-            _ if separated => {
-                let real = clean.parse::<f64>().ok().filter(|n| n.is_finite())?;
+        // An integer literal that fits in 64 bits is written plainly (`007` reads '7', and
+        // `-9223372036854775808` keeps its sign); any other number is written in SQLite's REAL
+        // text form, since the schema's text is not the REAL it reads.
+        Affinity::Text => Some(match clean.parse::<i64>() {
+            Ok(n) if integer => integer_default(n, affinity),
+            _ => {
+                let real = clean.parse::<f64>().ok()?;
                 text_value(real_text(real).as_bytes())
             }
-            _ => text_value(format!("{}{unsigned}", if minus { "-" } else { "" }).as_bytes()),
         }),
         Affinity::Numeric | Affinity::Real => numeric_value(&clean).and_then(finite),
         Affinity::Blob => match clean.parse::<i64>() {
@@ -1458,9 +1452,12 @@ fn signed_quoted_default(text: &str, affinity: Affinity) -> Option<CellValue> {
     }
 }
 
-/// A finite REAL as SQLite writes it into a TEXT column (`%!.15g`): 15 significant digits, a
-/// decimal point always present, and scientific notation outside 1e-4..1e15.
+/// A REAL as SQLite writes it into a TEXT column (`%!.15g`): 15 significant digits, a decimal
+/// point always present, scientific notation outside 1e-4..1e15, and `Inf`/`-Inf` for infinity.
 fn real_text(n: f64) -> String {
+    if n.is_infinite() {
+        return if n.is_sign_negative() { "-Inf".to_string() } else { "Inf".to_string() };
+    }
     let scientific = format!("{n:.14e}");
     let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
     let exponent: i32 = exponent.parse().unwrap_or(0);
@@ -2392,15 +2389,25 @@ mod tests {
     #[test]
     fn added_column_defaults_take_the_column_affinity() {
         for (declaration, value) in [
-            // TEXT: a number becomes text, an integer written plainly and anything else as written.
+            // TEXT: an integer written plainly, otherwise SQLite's own REAL text.
             ("x TEXT DEFAULT 5", text("5")),
             ("x VARCHAR(10) DEFAULT -5.0", text("-5.0")),
             ("x TEXT DEFAULT 007", text("7")),
             ("x TEXT DEFAULT - 007", text("-7")),
-            ("x CLOB DEFAULT +1e3", text("1e3")),
-            ("x TEXT DEFAULT 5.", text("5.")),
-            ("x TEXT DEFAULT 99999999999999999999", text("99999999999999999999")),
-            ("x TEXT DEFAULT 1e400", text("1e400")),
+            ("x CLOB DEFAULT +1e3", text("1000.0")),
+            ("x TEXT DEFAULT 5.", text("5.0")),
+            ("x TEXT DEFAULT 0.10", text("0.1")),
+            ("x TEXT DEFAULT 1.50", text("1.5")),
+            ("x TEXT DEFAULT 0001.5", text("1.5")),
+            ("x TEXT DEFAULT 1e-7", text("1.0e-07")),
+            ("x TEXT DEFAULT 1e16", text("1.0e+16")),
+            ("x TEXT DEFAULT -0.0", text("0.0")),
+            ("x TEXT DEFAULT 99999999999999999999", text("1.0e+20")),
+            ("x TEXT DEFAULT -9223372036854775808", text("-9223372036854775808")),
+            ("x TEXT DEFAULT 9223372036854775808", text("9.22337203685478e+18")),
+            ("x TEXT DEFAULT -9223372036854775809", text("-9.22337203685478e+18")),
+            ("x TEXT DEFAULT 1e400", text("Inf")),
+            ("x TEXT DEFAULT -1e400", text("-Inf")),
             ("x TEXT DEFAULT TRUE", text("1")),
             // INTEGER and NUMERIC: text that is a number becomes one; a whole REAL an INTEGER.
             ("x INTEGER DEFAULT '7'", CellValue::Int(7)),
@@ -2504,6 +2511,9 @@ mod tests {
             ("x TEXT DEFAULT 0x10", text("16")),
             ("x TEXT DEFAULT -0xFFFFFFFFFFFFFFFF", text("1")),
             ("x TEXT DEFAULT (5.0)", text("5.0")),
+            ("x TEXT DEFAULT (1e3)", text("1000.0")),
+            ("x TEXT DEFAULT (5.)", text("5.0")),
+            ("x TEXT DEFAULT (1e400)", text("Inf")),
             ("x TEXT DEFAULT (- 007)", text("-7")),
             ("x TEXT DEFAULT (TRUE)", text("1")),
             ("x INTEGER DEFAULT ('7')", CellValue::Int(7)),
