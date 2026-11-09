@@ -1112,6 +1112,7 @@ Gaps found while using the app for real projects.
       in the feed (the run sees only the tool call today; the builder's words say what it chose)
 - [ ] A question's own cost: a forked Claude Code session reports the whole session's running
       total, so a forked answer shows none; count questions in the project's usage
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-question-cost
 - [ ] "Make this change" on an answer that suggests one (sends it as a normal message)
 - [x] "Just ask" is told it has fewer tools than the builder and that the build may be running
       beside it, so it no longer reports the build's tools as disconnected or its work as cut off
