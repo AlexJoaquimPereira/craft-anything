@@ -952,7 +952,7 @@ fn walk_version(r: &Reader<'_>, start: usize, end: usize, depth: u8, info: &mut 
             _ if depth >= 2 && !is_text && !key.is_empty() && value_len > 0 => {
                 if let Some(child) = version_child_start(r, value_off, value_len, node_end) {
                     walk_version(r, child, node_end, depth + 1, info);
-                } else {
+                } else if depth == 3 {
                     let units = (value_len / 2).min((node_end.saturating_sub(value_off)) / 2);
                     let v = utf16_at(r, value_off, units).unwrap_or_default();
                     info.strings.insert(key, v.trim_end_matches('\0').to_string());

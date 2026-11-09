@@ -71,6 +71,17 @@ fn binary_typed_version_strings_are_read() {
     assert_eq!(info.strings.get("ProductName").map(String::as_str), Some("Craft"));
 }
 
+/// A binary leaf deeper than the string table is not a string and must not overwrite one.
+#[test]
+fn a_binary_leaf_below_the_string_depth_does_not_overwrite() {
+    let nested = binary_string("ProductName", "nested");
+    let container = node("FileDescription", &[0x4d, 0, 0x53, 0], 4, false, &[nested]);
+    let table = node("040904b0", &[], 0, true, &[string("ProductName", "Craft"), container]);
+    let info = pe::parse_version_info(&version_info(&[table])).unwrap();
+    assert_eq!(info.strings.get("ProductName").map(String::as_str), Some("Craft"));
+    assert_eq!(info.strings.keys().collect::<Vec<_>>(), ["ProductName"]);
+}
+
 /// An empty value in one language's table doesn't hide the value another table gives the key.
 #[test]
 fn an_empty_value_does_not_replace_a_real_one() {
