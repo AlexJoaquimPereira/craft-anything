@@ -1308,7 +1308,8 @@ fn literal_default(tokens: &[&str]) -> Option<CellValue> {
 }
 
 /// A SQLite hex integer is 64-bit two's complement, so `0xffffffffffffffff` is -1. An optional
-/// sign is accepted (`-0x10`).
+/// sign is accepted (`-0x10`), and a single underscore may separate two hex digits (`0xF_F`);
+/// any other placement is rejected.
 fn hex_integer(token: &str) -> Option<i64> {
     let (negative, unsigned) = match token.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -1318,7 +1319,24 @@ fn hex_integer(token: &str) -> Option<i64> {
     if digits.is_empty() {
         return None;
     }
-    let n = u64::from_str_radix(digits, 16).ok()? as i64;
+    let bytes = digits.as_bytes();
+    let mut clean = String::with_capacity(bytes.len());
+    let mut previous_was_digit = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'_' {
+            if !previous_was_digit || !bytes.get(i.checked_add(1)?)?.is_ascii_hexdigit() {
+                return None;
+            }
+            previous_was_digit = false;
+            continue;
+        }
+        if !b.is_ascii_hexdigit() {
+            return None;
+        }
+        clean.push(b as char);
+        previous_was_digit = true;
+    }
+    let n = u64::from_str_radix(&clean, 16).ok()? as i64;
     if negative { n.checked_neg() } else { Some(n) }
 }
 
@@ -1675,6 +1693,8 @@ mod tests {
             ("x INT CHECK(x <> 'DEFAULT') DEFAULT /* literal */ 7", CellValue::Int(7)),
             ("x INT DEFAULT 0x10 NOT NULL", CellValue::Int(16)),
             ("x INT DEFAULT -0x10", CellValue::Int(-16)),
+            ("x INT DEFAULT 0xF_F", CellValue::Int(255)),
+            ("x INT DEFAULT -0xF_F", CellValue::Int(-255)),
             ("x INT DEFAULT 0xFFFFFFFFFFFFFFFF", CellValue::Int(-1)),
             ("x DEFAULT (NULL)", CellValue::Null),
             ("x INT DEFAULT (42)", CellValue::Int(42)),
@@ -1692,6 +1712,10 @@ mod tests {
             "x DEFAULT ((5))",
             "x INT DEFAULT 0x",
             "x INT DEFAULT 0x10000000000000000",
+            "x INT DEFAULT 0x_F",
+            "x INT DEFAULT 0xF_",
+            "x INT DEFAULT 0xF__F",
+            "x INT DEFAULT 0xF_G",
             "x DEFAULT X'zz'",
         ] {
             short_record_case(declaration, vec![CellValue::Null], true);
