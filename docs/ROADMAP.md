@@ -1375,9 +1375,8 @@ Owner: open · Status: in progress
       and a separator-bearing REAL uses SQLite's REAL text form.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-default-literals
 - [x] Read a TEXT column's REAL default as SQLite does: `DEFAULT 1e3` and `DEFAULT 5.` are
-      '1000.0' and '5.0' in SQLite, while non-separated reals keep the schema's text here. A
-      non-integer REAL default now uses SQLite's REAL text form, including `Inf`/`-Inf`; integer
-      literals keep integer text.
+      '1000.0' and '5.0' in SQLite. A non-integer REAL default now uses SQLite's REAL text form,
+      including `Inf`/`-Inf`; integer literals keep integer text.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-real-text
 - [x] Read a signed quoted numeric default with SQLite's coercion before the column's affinity:
       `DEFAULT -'1e3'` is '-1000.0' on TEXT and -1000 on INTEGER, and `DEFAULT -'1.50'` is '-1.5';
