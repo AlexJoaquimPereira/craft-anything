@@ -1072,11 +1072,12 @@ Gaps found while using the app for real projects.
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
       — an API transcript records the mode it ran in (`TRANSCRIPT_VERSION` 2); one from the other
-      mode, or a version-1 one (counts as Deep), isn't resumed, and a no-message run studies again
-      instead of carrying on. Claimed: AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
-- [ ] A coding agent's saved session from the other mode still counts as carrying on
-      (`builder_started()` is mode-unaware), so a CLI mode switch can skip the study; gate it the
-      same way the API transcript is gated
+      mode, or a version-1 one (counts as Deep), isn't resumed. A same-mode continuation keeps its
+      transcript and carries on; a mismatch studies again from the brief. Claimed:
+      AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
+- [ ] Study can still be skipped after a mode switch: a coding agent's `builder_started()` is
+      mode-unaware, and an API follow-up message with an existing capture leaves `first` false even
+      when the transcript was rejected. Gate both on the run's mode
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
