@@ -1356,12 +1356,14 @@ fn take_identifier(seg: &str) -> (String, &str) {
     }
 }
 
-/// The type name is the run of tokens before the first column-constraint keyword.
+/// The type name is the run of tokens before the first column-constraint keyword. A comma inside
+/// the type's parentheses belongs to it (`DECIMAL(10, 2)`); only the column separator is dropped.
 fn extract_type(rest: &str) -> String {
     let mut out = String::new();
     let mut depth = 0i32;
     for tok in rest.split_whitespace() {
-        let upper = tok.trim_end_matches(',').to_ascii_uppercase();
+        let bare = tok.trim_end_matches(',');
+        let upper = bare.to_ascii_uppercase();
         if depth == 0
             && matches!(
                 upper.as_str(),
@@ -1375,7 +1377,7 @@ fn extract_type(rest: &str) -> String {
         if !out.is_empty() {
             out.push(' ');
         }
-        out.push_str(tok.trim_end_matches(','));
+        out.push_str(if depth == 0 { bare } else { tok });
     }
     out
 }
@@ -1687,6 +1689,15 @@ mod tests {
         assert_eq!(cols[0].type_name, "VARCHAR(50)");
         assert_eq!(cols[1].name, "odd");
         assert_eq!(cols[1].type_name, "NUMERIC");
+    }
+
+    #[test]
+    fn column_parsing_keeps_type_commas() {
+        let cols = parse_create_columns(
+            "CREATE TABLE t (amount DECIMAL(10, 2) NOT NULL, ratio NUMERIC(5,1), note TEXT DEFAULT 'a,b', id INTEGER PRIMARY KEY, name VARCHAR(50))",
+        );
+        let types: Vec<&str> = cols.iter().map(|c| c.type_name.as_str()).collect();
+        assert_eq!(types, ["DECIMAL(10, 2)", "NUMERIC(5,1)", "TEXT", "INTEGER", "VARCHAR(50)"]);
     }
 
     #[test]
