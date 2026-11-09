@@ -1144,6 +1144,7 @@ Gaps found while using the app for real projects.
 - [ ] Study can still be skipped after a mode switch: a coding agent's `builder_started()` is
       mode-unaware, and an API follow-up message with an existing capture leaves `first` false even
       when the transcript was rejected. Gate both on the run's mode
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-mode-switch-study
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
