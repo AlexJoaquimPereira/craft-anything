@@ -1565,6 +1565,28 @@ fn hub_config_keys_and_test_backend() {
     assert!(h.compare("Local", "Local", true).is_err());
 }
 
+/// #1358: a key saved for an API backend can be replaced or forgotten without removing the
+/// backend or its settings, so a rotated key isn't hidden behind an older one.
+#[test]
+fn a_saved_api_key_can_be_replaced_or_forgotten() {
+    let (h, _d) = hub();
+    add(&h, "OpenAI", BackendKind::Openai, "https://api.openai.com/v1", Some("sk-old"));
+    assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&true));
+    h.set_backend_key("OpenAI", " sk-new ").unwrap();
+    assert_eq!(h.keys.get("OpenAI").as_deref(), Some("sk-new"));
+    assert_eq!(h.key_for(&h.entry("OpenAI").unwrap()).unwrap(), "sk-new", "the replacement is the key a request uses");
+    h.remove_backend_key("OpenAI").unwrap();
+    assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&false));
+    assert!(h.backends().iter().any(|b| b.name == "OpenAI"), "the backend stays");
+    assert!(h.set_backend_key("OpenAI", "   ").is_err(), "an empty key is refused");
+    assert!(h.set_backend_key("No such backend", "sk-new").is_err());
+    assert!(h.remove_backend_key("No such backend").is_err());
+    add(&h, "Agent", BackendKind::AgentCli, "", None);
+    assert!(!h.stored_backend_keys().contains_key("Agent"), "an agent app has no saved key here");
+    assert!(h.set_backend_key("Agent", "sk-new").is_err(), "a coding agent keeps its own sign-in");
+    assert!(h.remove_backend_key("Agent").is_err());
+}
+
 /// #369: when OpenRouter has no provider that supports tools for a model (404 once only those are
 /// asked for), the turn goes on with the text protocol instead of failing; the first request
 /// required parameters, the second sends no tools.

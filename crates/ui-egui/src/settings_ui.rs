@@ -340,6 +340,8 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     let mut chosen_effort = None;
     let (mut pick_agent_model, mut chosen_agent_model, mut remote_program) = (None, None, None);
     let (mut tune_models, mut save_tuning) = (Vec::new(), None);
+    // A saved API key being replaced or forgotten (the keychain work happens off this frame).
+    let (mut save_key, mut forget_key) = (None, None);
     // The AI whose Remove was pressed once: asked again before its key is deleted.
     let confirm_id = egui::Id::new("remove-ai");
     let confirming: Option<String> = ui.data(|d| d.get_temp(confirm_id));
@@ -566,6 +568,46 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                     }
                 });
             });
+            // A key saved in the app silently wins over the environment's, so it can be replaced
+            // here without removing the AI (#1358). Every API backend can need one; agent apps
+            // sign in their own way.
+            if b.kind != BackendKind::AgentCli {
+                match app.backend_keys.as_ref().and_then(|keys| keys.get(&b.name).copied()) {
+                    Some(true) => {
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::pill(ui, "Key saved", t.success, t.raised);
+                            if widgets::secondary(ui, None, "Forget the key").clicked() {
+                                forget_key = Some(b.name.clone());
+                            }
+                        });
+                    }
+                    Some(false) => {
+                        // The draft lives in the UI's own store, so the row can keep borrowing the app.
+                        let id = egui::Id::new(("backend-key", &b.name));
+                        let mut key = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                        ui.horizontal_wrapped(|ui| {
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut key)
+                                    .id(id)
+                                    .password(true)
+                                    .hint_text(tr("API key (stored in your system keychain)"))
+                                    .desired_width(260.0)
+                                    .frame(widgets::text_field_frame_compact(&t)),
+                            );
+                            widgets::named(r, &trf("{name} key", &[("name", &b.name)]));
+                            let k = key.trim().to_string();
+                            if widgets::primary_icon(ui, None, "Save", !k.is_empty()).clicked() && !k.is_empty() {
+                                key.clear();
+                                save_key = Some((b.name.clone(), k));
+                            }
+                        });
+                        ui.data_mut(|d| d.insert_temp(id, key));
+                    }
+                    // Still being checked: nothing to show yet.
+                    None => {}
+                }
+                ui.add_space(4.0);
+            }
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(26.0);
@@ -636,6 +678,12 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             }
         });
         ui.add_space(6.0);
+    }
+    if let Some((name, key)) = save_key {
+        app.save_backend_key(name, key);
+    }
+    if let Some(name) = forget_key {
+        app.remove_backend_key(name);
     }
     if let Some((name, on)) = toggle {
         app.set_backend_enabled(&name, on);
@@ -1112,6 +1160,91 @@ mod tests {
             .join("\n");
         assert!(text.contains("Check"));
         assert!(text.contains("Agent test is installed but is not signed in."));
+    }
+
+    /// #1358: an API backend with a saved key can have it replaced or forgotten in place, while an
+    /// agent app (which signs in its own way) has no key row.
+    #[test]
+    fn a_saved_backend_key_can_be_replaced_or_forgotten() {
+        use std::collections::BTreeMap;
+
+        let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Experienced, true));
+        app.backends = vec![BackendConfig {
+            name: "OpenAI test".into(),
+            kind: BackendKind::Openai,
+            model: "gpt-test".into(),
+            base_url: None,
+            ssh_host: None,
+            enabled: true,
+        }];
+        let render = |app: &mut CraftApp| {
+            let context = egui::Context::default();
+            theme::install_fonts(&context);
+            let mut output = context.run_ui(Default::default(), |ui| ai(app, ui));
+            output.textures_delta.clear();
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.backend_keys = Some(BTreeMap::from([("OpenAI test".to_string(), true)]));
+        let text = render(&mut app);
+        assert!(text.contains("Key saved"), "a saved key says so: {text}");
+        assert!(text.contains("Forget the key"), "and can be forgotten without removing the AI: {text}");
+        assert!(!text.contains("API key (stored in your system keychain)"), "no key field once one is saved");
+
+        app.backend_keys = Some(BTreeMap::from([("OpenAI test".to_string(), false)]));
+        let text = render(&mut app);
+        assert!(text.contains("API key (stored in your system keychain)"), "a backend without one asks for it: {text}");
+        assert!(text.contains("Save"));
+        assert!(!text.contains("Key saved"));
+
+        // Every API backend gets the row, including a local OpenAI-compatible server.
+        app.backends = vec![BackendConfig {
+            name: "Local test".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "local-test".into(),
+            base_url: Some("http://127.0.0.1:9/v1".into()),
+            ssh_host: None,
+            enabled: true,
+        }];
+        app.backend_keys = Some(BTreeMap::from([("Local test".to_string(), false)]));
+        let text = render(&mut app);
+        assert!(text.contains("API key (stored in your system keychain)"), "a local server can take a key too: {text}");
+
+        app.backends = vec![BackendConfig {
+            name: "Agent test".into(),
+            kind: BackendKind::AgentCli,
+            model: "plain-test-agent".into(),
+            base_url: None,
+            ssh_host: None,
+            enabled: true,
+        }];
+        app.backend_keys = Some(BTreeMap::from([("Agent test".to_string(), false)]));
+        let text = render(&mut app);
+        assert!(!text.contains("Key saved"));
+        assert!(!text.contains("Forget the key"));
+        assert!(!text.contains("API key (stored in your system keychain)"), "an agent app has no key row: {text}");
+    }
+
+    /// A key check that started before a save or a newer check must not put the old state back.
+    #[test]
+    fn a_stale_backend_key_check_does_not_replace_a_newer_one() {
+        use std::collections::BTreeMap;
+
+        let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Experienced, true));
+        app.backend_keys_request = 2;
+        app.backend_keys = Some(BTreeMap::from([("OpenAI".to_string(), true)]));
+        app.handle_done(Finished { job: 1, result: Ok(Done::BackendKeys { request: 1, keys: BTreeMap::from([("OpenAI".to_string(), false)]) }) });
+        assert_eq!(app.backend_keys.as_ref().and_then(|keys| keys.get("OpenAI")), Some(&true), "the newer state stays");
+        app.handle_done(Finished { job: 2, result: Ok(Done::BackendKeys { request: 2, keys: BTreeMap::from([("OpenAI".to_string(), false)]) }) });
+        assert_eq!(app.backend_keys.as_ref().and_then(|keys| keys.get("OpenAI")), Some(&false), "the current check applies");
     }
 
     /// A failed worker frees only its own Check button; unrelated pending/results remain intact.

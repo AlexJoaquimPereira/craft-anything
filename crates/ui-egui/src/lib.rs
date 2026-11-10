@@ -234,6 +234,12 @@ pub enum Done {
     },
     /// Which asset providers have a key set up (provider id → stored).
     AssetKeys(std::collections::BTreeMap<String, bool>),
+    /// Which API backends have a key saved in the app (backend name → stored; #1358), and the
+    /// check that asked: a result from before a save or another check is stale.
+    BackendKeys {
+        request: u64,
+        keys: std::collections::BTreeMap<String, bool>,
+    },
     Wrote {
         what: String,
         path: Option<PathBuf>,
@@ -521,6 +527,11 @@ pub struct CraftApp {
     /// Which asset providers have a key set up, by provider id (`None` until checked; the keys
     /// themselves never come into the app).
     pub asset_keys: Option<std::collections::BTreeMap<String, bool>>,
+    /// Which API backends have a key saved in the app, by backend name (`None` until checked; the
+    /// keys themselves never come into the app). `backend_keys_request` drops a result from before
+    /// a save or a newer check.
+    pub backend_keys: Option<std::collections::BTreeMap<String, bool>>,
+    backend_keys_request: u64,
     /// What the open project's files say (built result, pictures, assets, open questions), read
     /// on a worker.
     pub facts: project::Facts,
@@ -619,6 +630,8 @@ impl CraftApp {
             kinds: craft_anything_ai::rebuild::KindRegistry::built_in(),
             game_engines: None,
             asset_keys: None,
+            backend_keys: None,
+            backend_keys_request: 0,
             facts: Default::default(),
             facts_reader: Default::default(),
             engine_flow: Default::default(),
@@ -1214,6 +1227,38 @@ impl CraftApp {
         self.jobs.spawn("Read AI settings", false, move |_| Ok(backends(&hub)));
     }
 
+    /// Find out which API backends have a key saved in the app, rather than only in the environment
+    /// (in the background: the keychain can be slow). Run after the backends are read.
+    pub fn check_backend_keys(&mut self) {
+        if self.headless {
+            return;
+        }
+        self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
+        let (request, hub) = (self.backend_keys_request, self.hub.clone());
+        self.jobs.spawn("Read AI settings", false, move |_| Ok(Done::BackendKeys { request, keys: hub.stored_backend_keys() }));
+    }
+
+    /// Replace the key saved for an API backend, keeping the backend and its options (#1358).
+    pub fn save_backend_key(&mut self, name: String, key: String) {
+        self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
+        let (request, hub) = (self.backend_keys_request, self.hub.clone());
+        self.jobs.spawn(tr("Save the key"), true, move |_| {
+            hub.set_backend_key(&name, &key).map_err(|e| e.message)?;
+            Ok(Done::BackendKeys { request, keys: hub.stored_backend_keys() })
+        });
+    }
+
+    /// Forget the key saved for an API backend, so the one in the environment is used again. The
+    /// backend itself stays.
+    pub fn remove_backend_key(&mut self, name: String) {
+        self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
+        let (request, hub) = (self.backend_keys_request, self.hub.clone());
+        self.jobs.spawn(tr("Forget the key"), true, move |_| {
+            hub.remove_backend_key(&name).map_err(|e| e.message)?;
+            Ok(Done::BackendKeys { request, keys: hub.stored_backend_keys() })
+        });
+    }
+
     /// Choose the backend that builds or extracts (`None`: its default).
     pub fn set_role(&mut self, role: craft_anything_ai::Role, name: Option<String>) {
         let hub = self.hub.clone();
@@ -1534,6 +1579,14 @@ impl CraftApp {
                     self.backends.iter().any(|backend| backend.name == *name && craft_anything_ai::model_options::supported(backend))
                         && self.backend_options.get(name).and_then(|options| options.cli_model.as_ref()) == state.cli_model.as_ref()
                 });
+                // Settings shows which backends have a saved key; the list may have changed (added,
+                // removed, or read again after a save).
+                self.check_backend_keys();
+            }
+            Done::BackendKeys { request, keys } => {
+                if request == self.backend_keys_request {
+                    self.backend_keys = Some(keys);
+                }
             }
             Done::ModelChoices { name, result } => match result {
                 // Kept only while the picker is still open for that AI.
