@@ -1251,6 +1251,7 @@ Gaps found while using the app for real projects.
 - [ ] Record which mode wrote `capture/`, so a failed run that leaves a capture from the other mode
       isn't handed to a same-mode conversation; remove Deep-only capture files when a Clean room
       study replaces them
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-capture-mode
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
