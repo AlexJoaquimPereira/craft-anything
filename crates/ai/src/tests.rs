@@ -1590,6 +1590,31 @@ fn a_saved_api_key_can_be_replaced_or_forgotten() {
     assert!(h.remove_backend_key("Agent").is_err());
 }
 
+/// A key save and another key or backend change wait for each other: a save can't write the key
+/// after a remove has deleted the backend and its key.
+#[test]
+fn a_key_save_waits_for_another_backend_change() {
+    let (h, _d) = hub();
+    add(&h, "OpenAI", BackendKind::Openai, "https://api.openai.com/v1", None);
+    let h = Arc::new(h);
+    let edit = h.backend_edits.lock().unwrap();
+    let (started, started_rx) = std::sync::mpsc::channel();
+    let worker = {
+        let h = h.clone();
+        std::thread::spawn(move || {
+            started.send(()).unwrap();
+            h.set_backend_key("OpenAI", "sk-new")
+        })
+    };
+    started_rx.recv().unwrap();
+    // While another change holds the lock, the save can't reach the keychain.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!worker.is_finished(), "the save waits for the other backend change");
+    drop(edit);
+    worker.join().unwrap().unwrap();
+    assert_eq!(h.keys.get("OpenAI").as_deref(), Some("sk-new"));
+}
+
 /// #369: when OpenRouter has no provider that supports tools for a model (404 once only those are
 /// asked for), the turn goes on with the text protocol instead of failing; the first request
 /// required parameters, the second sends no tools.

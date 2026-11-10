@@ -653,9 +653,13 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                     toggle = Some((b.name.clone(), !b.enabled));
                 }
                 if confirming.as_ref() == Some(&b.name) {
-                    if widgets::secondary(ui, Some("trash-2"), "Remove it and its key").clicked() {
-                        remove = Some(b.name.clone());
-                    }
+                    // A key save or forget for this backend is still running: the save could
+                    // write the key back after the backend and its key are gone.
+                    ui.add_enabled_ui(!app.backend_key_pending.contains(&b.name), |ui| {
+                        if widgets::secondary(ui, Some("trash-2"), "Remove it and its key").clicked() {
+                            remove = Some(b.name.clone());
+                        }
+                    });
                     if widgets::link(ui, "Keep it").clicked() {
                         ui.data_mut(|d| d.remove::<String>(confirm_id));
                     }
