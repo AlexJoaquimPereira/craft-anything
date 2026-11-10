@@ -161,14 +161,13 @@ impl KeyStore {
         // with no keychain finds nothing); a locked, denied or timed-out one fails closed here.
         let result = if self.use_keychain { keychain::delete(backend) } else { KeychainDelete::Confirmed };
         let read_back = (result == KeychainDelete::Unreachable).then(|| keychain::get(backend)).flatten();
-        let keychain_done = keychain_delete_confirmed(result, read_back);
+        if !keychain_delete_confirmed(result, read_back) {
+            return Err(ToolError::new(ErrorCode::NoPermission, "The system keychain still has this key, so it wasn't removed.")
+                .with_remediation("Unlock the keychain and try again, or delete this AI's entry in your keychain app."));
+        }
         let mut t = self.read_file_to_change()?;
         if t.remove(backend).is_some() {
             self.write_file(&t)?;
-        }
-        if !keychain_done {
-            return Err(ToolError::new(ErrorCode::NoPermission, "The system keychain still has this key, so it wasn't removed.")
-                .with_remediation("Unlock the keychain and try again, or delete this AI's entry in your keychain app."));
         }
         Ok(())
     }
