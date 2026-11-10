@@ -1608,7 +1608,14 @@ fn clean_room_studies_nothing_inside_and_deep_mode_looks() {
     for (deep, name) in [(false, "clean"), (true, "deep")] {
         let mut ws = Workspace::create(&d.path().join("projects"), name, "Recreate this game", TargetRef::Local { path: game.clone() }).unwrap();
         let mut w = check_worker(&ws, deep);
-        w.study(&mut ws, kind("game").as_ref()).unwrap();
+        // What an earlier Deep study left: a Clean room study must remove it before writing its own.
+        std::fs::create_dir_all(ws.capture_dir()).unwrap();
+        std::fs::write(ws.capture_dir().join(super::study::HOW_IT_WORKS), "deep notes").unwrap();
+        std::fs::write(ws.capture_dir().join("page.html"), "<p>deep</p>").unwrap();
+        let runs = ws.capture_dir().join(kinds::runs::RUNS_DIR);
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(runs.join("no-arguments.json"), "{}").unwrap();
+        w.study(&mut ws, kind("game").as_ref(), deep).unwrap();
         let notes = std::fs::read_to_string(ws.capture_dir().join("README.md")).unwrap();
         let files: Vec<_> = std::fs::read_dir(ws.capture_dir()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         if deep {
@@ -1641,7 +1648,7 @@ fn deep_mode_maps_the_javascript_beside_an_exe_target() {
     for (name, target) in [("folder", app.clone()), ("exe", app.join("App.exe"))] {
         let mut ws = Workspace::create(&d.path().join("projects"), name, "Recreate this app", TargetRef::Local { path: target }).unwrap();
         let mut w = check_worker(&ws, true);
-        w.study(&mut ws, kind("game").as_ref()).unwrap();
+        w.study(&mut ws, kind("game").as_ref(), true).unwrap();
         let notes = std::fs::read_to_string(ws.capture_dir().join("README.md")).unwrap();
         assert!(notes.contains("## JavaScript application"), "{name}: {notes}");
     }
@@ -1775,6 +1782,8 @@ mod picking_up_a_build {
         let mut ws = Workspace::create(&b.projects, "x", "A thing", TargetRef::None).unwrap();
         ws.manifest.agent_session = Some("session-1".into());
         ws.manifest.stack = "Anything".into();
+        // The fixture's capture was studied in the default (Deep) session.
+        ws.manifest.capture_deep = Some(true);
         ws.save().unwrap();
         std::fs::create_dir_all(ws.capture_dir()).unwrap();
         std::fs::create_dir_all(ws.app_dir()).unwrap();
@@ -2366,6 +2375,7 @@ mod picking_up_a_build {
             let b = bench();
             let mut ws = worked_on(&b);
             ws.manifest.agent_session_deep = saved;
+            ws.manifest.capture_deep = Some(deep);
             ws.save().unwrap();
             std::fs::write(ws.capture_dir().join("README.md"), "# What we found in the Deep run\n\ninside evidence").unwrap();
             b.hub.engine.session().settings.deep_mode = deep;
@@ -2510,24 +2520,92 @@ mod picking_up_a_build {
     }
 
     /// R2.9: a follow-up with a conversation kept in the other mode studies even when a capture
-    /// exists; one that resumed a conversation in this mode builds from the capture without
-    /// studying again. A fresh follow-up with no conversation at all keeps the old no-study path.
+    /// exists; one that resumed a conversation in this mode builds from a capture in this mode
+    /// without studying again. A capture from the other mode studies again, whatever conversation
+    /// is kept.
     #[test]
     fn a_rejected_transcript_studies_even_with_a_capture() {
         use super::super::{KeptHistory, starts_with_study};
         let opts = RunOptions::default();
         let none = KeptHistory::default();
-        assert!(starts_with_study(&opts, none, true), "no conversation for this mode studies");
+        assert!(starts_with_study(&opts, none, true), "no conversation for this mode studies even with a capture in this mode");
         let mut follow_up = RunOptions { message: Some("change it".into()), ..Default::default() };
-        assert!(!starts_with_study(&follow_up, none, true), "a fresh follow-up with a capture doesn't study");
+        assert!(!starts_with_study(&follow_up, none, true), "a fresh follow-up with a capture in this mode doesn't study");
         assert!(starts_with_study(&follow_up, KeptHistory { elsewhere: true, ..Default::default() }, true), "a conversation rejected for mode studies");
         assert!(!starts_with_study(&follow_up, KeptHistory { in_mode: true, ..Default::default() }, true), "a conversation in this mode carries on");
         assert!(starts_with_study(&opts, KeptHistory { in_mode: true, ..Default::default() }, false), "no capture to build from: study");
+        assert!(starts_with_study(&follow_up, none, false), "a capture from the other mode studies even for a fresh follow-up");
+        assert!(
+            starts_with_study(&follow_up, KeptHistory { in_mode: true, ..Default::default() }, false),
+            "a capture from the other mode studies even when the conversation is in this mode"
+        );
         follow_up.message = None;
         assert!(
             !starts_with_study(&follow_up, KeptHistory { in_mode: true, ..Default::default() }, true),
-            "a same-mode continuation studies only without a capture"
+            "a same-mode continuation studies only without a usable capture"
         );
+    }
+
+    /// R2.9: a capture a Deep study left must not be handed to a Clean room run, even when the
+    /// conversation the project keeps is in Clean room. The run studies again and replaces it.
+    #[test]
+    fn a_capture_from_the_other_mode_is_studied_again() {
+        let b = bench();
+        b.hub.engine.session().settings.deep_mode = false;
+        let target = b.projects.join("target.bin");
+        std::fs::write(&target, b"\x7fELF not really").unwrap();
+        let mut ws = Workspace::create(&b.projects, "mode", "Recreate this app", TargetRef::Local { path: target }).unwrap();
+        // A Deep study's capture, and a conversation the project kept in Clean room.
+        std::fs::create_dir_all(ws.capture_dir()).unwrap();
+        std::fs::write(ws.capture_dir().join("README.md"), "# What we found in the Deep run\n\nDecompiled notes.").unwrap();
+        ws.manifest.capture_deep = Some(true);
+        ws.manifest.agent_session = Some("clean-session".into());
+        ws.manifest.agent_session_deep = Some(false);
+        ws.manifest.stack = "Anything".into();
+        ws.save().unwrap();
+        let (ok, feed) = try_with(&b, &ws, RunOptions::default());
+        let notes = std::fs::read_to_string(ws.capture_dir().join("README.md")).unwrap_or_default();
+        assert!(notes.starts_with("# Clean room"), "the Deep capture must not be handed to Clean room: {notes}\n{feed:?}");
+        assert!(!notes.contains("Decompiled notes"), "{notes}");
+        assert_eq!(Workspace::open(&ws.root).unwrap().manifest.capture_deep, Some(false), "the Clean room study recorded its mode");
+        let _ = ok;
+
+        // The other way: a Clean room capture must not be handed to a Deep run either; Deep studies
+        // again and records its own capture.
+        let b = bench();
+        let target = b.projects.join("target-deep.bin");
+        std::fs::write(&target, b"\x7fELF not really").unwrap();
+        let mut ws = Workspace::create(&b.projects, "mode-deep", "Recreate this app", TargetRef::Local { path: target }).unwrap();
+        std::fs::create_dir_all(ws.capture_dir()).unwrap();
+        std::fs::write(ws.capture_dir().join("README.md"), "# Clean room\n\nNothing inside was read.").unwrap();
+        ws.manifest.capture_deep = Some(false);
+        ws.manifest.agent_session = Some("deep-session".into());
+        ws.manifest.agent_session_deep = Some(true);
+        ws.manifest.stack = "Anything".into();
+        ws.save().unwrap();
+        let (ok, feed) = try_with(&b, &ws, RunOptions::default());
+        let notes = std::fs::read_to_string(ws.capture_dir().join("README.md")).unwrap_or_default();
+        assert!(notes.starts_with("# What we found"), "the Clean room capture must not be handed to Deep: {notes}\n{feed:?}");
+        assert_eq!(Workspace::open(&ws.root).unwrap().manifest.capture_deep, Some(true), "the Deep study recorded its mode");
+        let _ = ok;
+    }
+
+    /// A capture with no recorded mode (a failed study, or one copied in) isn't usable: a run
+    /// studies again. A recorded capture is usable only in its own mode.
+    #[test]
+    fn a_capture_with_no_recorded_mode_is_studied_again() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "x", "A thing", TargetRef::None).unwrap();
+        assert!(!super::super::capture_in_mode(&ws, false), "no capture yet");
+        std::fs::create_dir_all(ws.capture_dir()).unwrap();
+        assert!(!super::super::capture_in_mode(&ws, true), "a capture with no mode isn't trusted in Deep");
+        assert!(!super::super::capture_in_mode(&ws, false), "nor in Clean room");
+        ws.manifest.capture_deep = Some(true);
+        assert!(super::super::capture_in_mode(&ws, true), "a Deep capture is usable in Deep");
+        assert!(!super::super::capture_in_mode(&ws, false), "but not in Clean room");
+        ws.manifest.capture_deep = Some(false);
+        assert!(!super::super::capture_in_mode(&ws, true), "a Clean room capture isn't handed to Deep");
+        assert!(super::super::capture_in_mode(&ws, false));
     }
 
     /// A saved session records the mode it ran in, and a lost one clears both.
@@ -2593,6 +2671,7 @@ mod picking_up_a_build {
         let b = bench();
         let mut ws = Workspace::create(&b.projects, "x", "A website for a bakery", TargetRef::None).unwrap();
         ws.manifest.agent_session = Some("session-1".into());
+        ws.manifest.capture_deep = Some(true);
         ws.save().unwrap();
         std::fs::create_dir_all(ws.capture_dir()).unwrap();
         std::fs::create_dir_all(ws.app_dir()).unwrap();
@@ -4253,13 +4332,13 @@ fn a_later_run_opens_the_projects_program_again_for_the_builder() {
             self_check: None,
             reset_progress_after_notes: false,
         };
-        w.reopen_target(&mut ws, app.as_ref(), true).unwrap();
+        w.reopen_target(&mut ws, app.as_ref(), true, deep).unwrap();
         assert!(w.engine.session().shared_targets().is_empty(), "a builder over SSH isn't handed this computer's targets");
-        w.reopen_target(&mut ws, app.as_ref(), false).unwrap();
+        w.reopen_target(&mut ws, app.as_ref(), false, deep).unwrap();
         let opened: Vec<PathBuf> = w.engine.session().shared_targets().into_iter().map(|t| t.path).collect();
         if deep {
             assert_eq!(opened, std::slice::from_ref(&program), "the builder's tool server is handed the program");
-            w.reopen_target(&mut ws, app.as_ref(), false).unwrap();
+            w.reopen_target(&mut ws, app.as_ref(), false, deep).unwrap();
             assert_eq!(w.engine.session().shared_targets().len(), 1, "an open program isn't opened twice");
         } else {
             assert!(opened.is_empty(), "Clean room opens nothing");
