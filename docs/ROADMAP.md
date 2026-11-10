@@ -1213,6 +1213,7 @@ Gaps found while using the app for real projects.
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-mode-switch-study
 - [ ] Exercise a mode-switched API follow-up end to end: an other-mode transcript, a capture and a
       message must study again, not only the decision helper
+      — claimed: AlexJoaquimPereira, branch test/r2.9-mode-switch-api-test
 - [ ] Record which mode wrote `capture/`, so a failed run that leaves a capture from the other mode
       isn't handed to a same-mode conversation; remove Deep-only capture files when a Clean room
       study replaces them
