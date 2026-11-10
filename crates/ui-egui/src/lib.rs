@@ -545,6 +545,9 @@ pub struct CraftApp {
     /// What has been typed in each API backend's key field, kept across frames and after a failed
     /// save.
     pub backend_key_inputs: std::collections::BTreeMap<String, String>,
+    /// Backends whose key save or forget is still running: their key controls stay disabled so a
+    /// later action can't be overtaken by an earlier worker. Other backends keep working.
+    pub backend_key_pending: std::collections::BTreeSet<String>,
     /// What the open project's files say (built result, pictures, assets, open questions), read
     /// on a worker.
     pub facts: project::Facts,
@@ -646,6 +649,7 @@ impl CraftApp {
             backend_keys: None,
             backend_keys_request: 0,
             backend_key_inputs: Default::default(),
+            backend_key_pending: Default::default(),
             facts: Default::default(),
             facts_reader: Default::default(),
             engine_flow: Default::default(),
@@ -1255,6 +1259,7 @@ impl CraftApp {
     /// Replace the key saved for an API backend, keeping the backend and its options (#1358).
     pub fn save_backend_key(&mut self, name: String, key: String) {
         self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
+        self.backend_key_pending.insert(name.clone());
         let (request, hub) = (self.backend_keys_request, self.hub.clone());
         self.jobs.spawn(tr("Save the key"), true, move |_| {
             let result = hub.set_backend_key(&name, &key);
@@ -1268,6 +1273,7 @@ impl CraftApp {
     /// backend itself stays.
     pub fn remove_backend_key(&mut self, name: String) {
         self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
+        self.backend_key_pending.insert(name.clone());
         let (request, hub) = (self.backend_keys_request, self.hub.clone());
         self.jobs.spawn(tr("Forget the key"), true, move |_| {
             let error = hub.remove_backend_key(&name).err().map(|e| e.message);
@@ -1605,6 +1611,7 @@ impl CraftApp {
                 }
             }
             Done::BackendKeyResult { request, name, keys, error, saved_key, forgot } => {
+                self.backend_key_pending.remove(&name);
                 if forgot && error.is_none() {
                     self.backend_key_inputs.remove(&name);
                 } else if let Some(key) = saved_key

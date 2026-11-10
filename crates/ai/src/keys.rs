@@ -5,6 +5,7 @@ use crate::BackendKind;
 use craft_anything_engine::tools::asset_tools::AssetKeys;
 use craft_anything_engines::assets::{AssetProvider, AssetProviders};
 use craft_anything_evidence::{ErrorCode, ToolError};
+use craft_anything_platform::sync::Mutex;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -16,6 +17,10 @@ pub const NO_KEYCHAIN_ENV: &str = "CRAFT_ANYTHING_NO_KEYCHAIN";
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 const FILE_HEADER: &str = "# Craft Anything AI keys: FALLBACK STORE.\n# These keys are here because no OS keychain was available when they were saved.\n# This file is readable only by you (0600). Delete a line to forget a key.\n";
+
+/// Serializes every fallback-file read-modify-write, across backend names: two saves for different
+/// backends must not read the file together and overwrite each other's entry.
+static FILE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Where the fal.ai key for generated game assets is stored.
 pub const FAL_KEY: &str = "assets:fal";
@@ -152,6 +157,7 @@ impl KeyStore {
         }
         if self.use_keychain && keychain::set(backend, key) {
             // Don't leave a stale copy in the fallback file (the keychain's copy is read first).
+            let _file = FILE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Ok(mut t) = self.read_file_to_change()
                 && t.remove(backend).is_some()
             {
@@ -159,6 +165,7 @@ impl KeyStore {
             }
             return Ok("keychain");
         }
+        let _file = FILE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut t = self.read_file_to_change()?;
         t.insert(backend.to_string(), toml::Value::String(key.to_string()));
         self.write_file(&t).map_err(|e| ToolError::new(ErrorCode::NoPermission, format!("Couldn't save the key: {}", e.message)))?;
@@ -171,13 +178,25 @@ impl KeyStore {
         // with no keychain finds nothing); a locked, denied or timed-out one fails closed here.
         let result = if self.use_keychain { keychain::delete(backend) } else { KeychainDelete::Confirmed };
         let read_back = if result == KeychainDelete::Unreachable { keychain::get_result(backend) } else { KeychainGet::Missing };
-        if !keychain_delete_confirmed(result, read_back) {
+        let keychain_done = keychain_delete_confirmed(result, read_back);
+        // A known keychain failure leaves both copies untouched for a retry.
+        if result == KeychainDelete::Unconfirmed {
             return Err(ToolError::new(ErrorCode::NoPermission, "The system keychain still has this key, so it wasn't removed.")
                 .with_remediation("Unlock the keychain and try again, or delete this AI's entry in your keychain app."));
         }
-        let mut t = self.read_file_to_change()?;
-        if t.remove(backend).is_some() {
-            self.write_file(&t)?;
+        {
+            let _file = FILE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut t = self.read_file_to_change()?;
+            if t.remove(backend).is_some() {
+                self.write_file(&t)?;
+            }
+        }
+        if !keychain_done {
+            return Err(ToolError::new(
+                ErrorCode::NoPermission,
+                "The saved key file was cleared, but the system keychain couldn't confirm this key was removed.",
+            )
+            .with_remediation("Unlock the keychain and try again, or delete this AI's entry in your keychain app."));
         }
         Ok(())
     }
@@ -330,6 +349,32 @@ mod tests {
         assert!(!keychain_delete_confirmed(KeychainDelete::Unreachable, Found("still here".into())), "the keychain still has it");
         assert!(!keychain_delete_confirmed(KeychainDelete::Unreachable, Unavailable), "a read error or timeout can't confirm the delete");
         assert!(!keychain_delete_confirmed(KeychainDelete::Unconfirmed, Missing), "a locked or timed-out delete fails closed");
+    }
+
+    /// Saves for different backends share one fallback file: a read-modify-write from one must not
+    /// overwrite another's entry.
+    #[test]
+    fn fallback_writes_from_different_backends_dont_lose_entries() {
+        let d = tempfile::tempdir().unwrap();
+        let store = KeyStore::file_only(d.path().join("keys.toml"));
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = store.clone();
+            handles.push(std::thread::spawn(move || {
+                for j in 0..5 {
+                    store.set(&format!("backend-{i}-{j}"), "sk-test").unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let keys = store.read_file();
+        for i in 0..8 {
+            for j in 0..5 {
+                assert_eq!(keys.get(&format!("backend-{i}-{j}")).and_then(|v| v.as_str()), Some("sk-test"), "backend-{i}-{j}");
+            }
+        }
     }
 
     #[test]

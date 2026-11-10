@@ -574,29 +574,34 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             // sign in their own way. The field stays even when a key is saved, so a replacement
             // doesn't need Forget first.
             if b.kind != BackendKind::AgentCli {
-                if app.backend_keys.as_ref().and_then(|keys| keys.get(&b.name).copied()) == Some(true) {
+                // A save or forget for this backend is still running: no later action may be
+                // submitted until it finishes, so workers can't overtake one another. Other
+                // backends keep their controls.
+                ui.add_enabled_ui(!app.backend_key_pending.contains(&b.name), |ui| {
+                    if app.backend_keys.as_ref().and_then(|keys| keys.get(&b.name).copied()) == Some(true) {
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::pill(ui, "Key saved", t.success, t.raised);
+                            if widgets::secondary(ui, None, "Forget the key").clicked() {
+                                forget_key = Some(b.name.clone());
+                            }
+                        });
+                    }
+                    let key = key_drafts.entry(b.name.clone()).or_default();
                     ui.horizontal_wrapped(|ui| {
-                        widgets::pill(ui, "Key saved", t.success, t.raised);
-                        if widgets::secondary(ui, None, "Forget the key").clicked() {
-                            forget_key = Some(b.name.clone());
+                        let r = ui.add(
+                            egui::TextEdit::singleline(key)
+                                .password(true)
+                                .hint_text(tr("API key (stored in your system keychain)"))
+                                .desired_width(260.0)
+                                .frame(widgets::text_field_frame_compact(&t)),
+                        );
+                        widgets::named(r, &trf("{name} key", &[("name", &b.name)]));
+                        let k = key.trim().to_string();
+                        if widgets::primary_icon(ui, None, "Save", !k.is_empty()).clicked() && !k.is_empty() {
+                            // Keep the draft until the save succeeds; a failure must not lose it.
+                            save_key = Some((b.name.clone(), k));
                         }
                     });
-                }
-                let key = key_drafts.entry(b.name.clone()).or_default();
-                ui.horizontal_wrapped(|ui| {
-                    let r = ui.add(
-                        egui::TextEdit::singleline(key)
-                            .password(true)
-                            .hint_text(tr("API key (stored in your system keychain)"))
-                            .desired_width(260.0)
-                            .frame(widgets::text_field_frame_compact(&t)),
-                    );
-                    widgets::named(r, &trf("{name} key", &[("name", &b.name)]));
-                    let k = key.trim().to_string();
-                    if widgets::primary_icon(ui, None, "Save", !k.is_empty()).clicked() && !k.is_empty() {
-                        // Keep the draft until the save succeeds; a failure must not lose it.
-                        save_key = Some((b.name.clone(), k));
-                    }
                 });
                 ui.add_space(4.0);
             }
