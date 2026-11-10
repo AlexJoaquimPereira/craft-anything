@@ -1211,7 +1211,7 @@ Gaps found while using the app for real projects.
       the saved session's mode, and a run studies again when its only kept conversation is in the
       other mode; a follow-up with no kept conversation keeps its old path
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-mode-switch-study
-- [ ] Exercise a mode-switched API follow-up end to end: an other-mode transcript, a capture and a
+- [x] Exercise a mode-switched API follow-up end to end: an other-mode transcript, a capture and a
       message must study again, not only the decision helper
       — claimed: AlexJoaquimPereira, branch test/r2.9-mode-switch-api-test
 - [ ] Record which mode wrote `capture/`, so a failed run that leaves a capture from the other mode

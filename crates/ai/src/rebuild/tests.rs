@@ -2422,6 +2422,43 @@ mod picking_up_a_build {
         assert!(!super::super::is_carrying_on(&opts, false), "one in another mode is not");
     }
 
+    /// R2.9: an API follow-up with an other-mode transcript, a capture from that mode and a new
+    /// message studies again through the real run, so a Deep capture isn't handed to Clean room.
+    #[test]
+    fn a_mode_switched_api_follow_up_studies_again() {
+        let b = bench();
+        local_api(&b);
+        b.hub.engine.session().settings.deep_mode = false;
+
+        let target = b.projects.join("mode-switch-target.bin");
+        std::fs::write(&target, b"\x7fELF not really").unwrap();
+        let ws = Workspace::create(&b.projects, "mode-switch", "Recreate this app", TargetRef::Local { path: target }).unwrap();
+        // A Deep conversation and the capture its study left.
+        crate::context::save(&ws.transcript_path(), &[crate::model::Msg::user_text("what it does")], true).unwrap();
+        std::fs::create_dir_all(ws.capture_dir()).unwrap();
+        std::fs::write(ws.capture_dir().join("README.md"), "# What we found in the Deep run\n\nDecompiled notes.").unwrap();
+
+        let run = RebuildRun::start(
+            &b.hub,
+            Workspace::open(&ws.root).unwrap(),
+            RunOptions { backend: Some("Local".into()), message: Some("change the window title".into()), ..RunOptions::default() },
+        )
+        .expect("the follow-up starts");
+
+        let began = Instant::now();
+        let mut notes = String::new();
+        while began.elapsed() < Duration::from_secs(10) {
+            notes = std::fs::read_to_string(ws.capture_dir().join("README.md")).unwrap_or_default();
+            if notes.starts_with("# Clean room") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(run);
+        assert!(notes.starts_with("# Clean room"), "the other-mode capture must not be carried into Clean room: {notes}");
+        assert!(!notes.contains("Decompiled notes"), "{notes}");
+    }
+
     /// R2.9: a follow-up with a conversation kept in the other mode studies even when a capture
     /// exists; one that resumed a conversation in this mode builds from the capture without
     /// studying again. A fresh follow-up with no conversation at all keeps the old no-study path.
