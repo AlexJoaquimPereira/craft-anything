@@ -588,7 +588,8 @@ Owner: open · Status: todo
 - [ ] Failure logs for the other ways an AI stops (API backends, MCP server start-up), like the
       ones agent CLIs write to `logs/` in the config folder
 - [x] Settings → AI can replace or forget an API backend's saved key, so a key rotated in the
-      environment isn't hidden behind an older saved one (#1358)
+      environment isn't hidden behind an older saved one (#1358); `ai key <name>` shows, replaces
+      or forgets it headlessly, and never prints it
       — claimed: AlexJoaquimPereira, branch bugfix/r5.5-replace-saved-key
 
 ### R5.6 Tools report only what they saw

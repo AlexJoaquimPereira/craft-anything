@@ -1572,17 +1572,20 @@ fn a_saved_api_key_can_be_replaced_or_forgotten() {
     let (h, _d) = hub();
     add(&h, "OpenAI", BackendKind::Openai, "https://api.openai.com/v1", Some("sk-old"));
     assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&true));
+    assert!(h.saved_backend_key("OpenAI").unwrap());
     h.set_backend_key("OpenAI", " sk-new ").unwrap();
     assert_eq!(h.keys.get("OpenAI").as_deref(), Some("sk-new"));
     assert_eq!(h.key_for(&h.entry("OpenAI").unwrap()).unwrap(), "sk-new", "the replacement is the key a request uses");
     h.remove_backend_key("OpenAI").unwrap();
     assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&false));
+    assert!(!h.saved_backend_key("OpenAI").unwrap());
     assert!(h.backends().iter().any(|b| b.name == "OpenAI"), "the backend stays");
     assert!(h.set_backend_key("OpenAI", "   ").is_err(), "an empty key is refused");
     assert!(h.set_backend_key("No such backend", "sk-new").is_err());
     assert!(h.remove_backend_key("No such backend").is_err());
     add(&h, "Agent", BackendKind::AgentCli, "", None);
     assert!(!h.stored_backend_keys().contains_key("Agent"), "an agent app has no saved key here");
+    assert!(h.saved_backend_key("Agent").is_err());
     assert!(h.set_backend_key("Agent", "sk-new").is_err(), "a coding agent keeps its own sign-in");
     assert!(h.remove_backend_key("Agent").is_err());
 }

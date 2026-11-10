@@ -882,6 +882,14 @@ impl AiHub {
             .collect()
     }
 
+    /// Whether an API backend has a key saved in the app (not the environment); never the key.
+    pub fn saved_backend_key(&self, name: &str) -> Result<bool, ToolError> {
+        if self.entry(name)?.config.kind == BackendKind::AgentCli {
+            return Err(ToolError::invalid("A coding agent keeps its own sign-in; there is no saved key to report here."));
+        }
+        Ok(self.keys.get(name).is_some())
+    }
+
     /// Replace the key saved for an API backend (#1358). The backend and its options stay as they
     /// are; an older key in the system keychain must not keep winning, so the new one is read back.
     pub fn set_backend_key(&self, name: &str, key: &str) -> Result<(), ToolError> {

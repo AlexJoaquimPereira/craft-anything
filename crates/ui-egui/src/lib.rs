@@ -240,6 +240,16 @@ pub enum Done {
         request: u64,
         keys: std::collections::BTreeMap<String, bool>,
     },
+    /// A saved-key mutation finished: the refreshed status, the error to report (if any), and the
+    /// key that was saved so a matching draft can be cleared.
+    BackendKeyResult {
+        request: u64,
+        name: String,
+        keys: std::collections::BTreeMap<String, bool>,
+        error: Option<String>,
+        saved_key: Option<String>,
+        forgot: bool,
+    },
     Wrote {
         what: String,
         path: Option<PathBuf>,
@@ -532,6 +542,9 @@ pub struct CraftApp {
     /// a save or a newer check.
     pub backend_keys: Option<std::collections::BTreeMap<String, bool>>,
     backend_keys_request: u64,
+    /// What has been typed in each API backend's key field, kept across frames and after a failed
+    /// save.
+    pub backend_key_inputs: std::collections::BTreeMap<String, String>,
     /// What the open project's files say (built result, pictures, assets, open questions), read
     /// on a worker.
     pub facts: project::Facts,
@@ -632,6 +645,7 @@ impl CraftApp {
             asset_keys: None,
             backend_keys: None,
             backend_keys_request: 0,
+            backend_key_inputs: Default::default(),
             facts: Default::default(),
             facts_reader: Default::default(),
             engine_flow: Default::default(),
@@ -1243,8 +1257,10 @@ impl CraftApp {
         self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
         let (request, hub) = (self.backend_keys_request, self.hub.clone());
         self.jobs.spawn(tr("Save the key"), true, move |_| {
-            hub.set_backend_key(&name, &key).map_err(|e| e.message)?;
-            Ok(Done::BackendKeys { request, keys: hub.stored_backend_keys() })
+            let result = hub.set_backend_key(&name, &key);
+            let saved_key = result.is_ok().then(|| key.clone());
+            let error = result.err().map(|e| e.message);
+            Ok(Done::BackendKeyResult { request, name: name.clone(), keys: hub.stored_backend_keys(), error, saved_key, forgot: false })
         });
     }
 
@@ -1254,8 +1270,8 @@ impl CraftApp {
         self.backend_keys_request = self.backend_keys_request.wrapping_add(1);
         let (request, hub) = (self.backend_keys_request, self.hub.clone());
         self.jobs.spawn(tr("Forget the key"), true, move |_| {
-            hub.remove_backend_key(&name).map_err(|e| e.message)?;
-            Ok(Done::BackendKeys { request, keys: hub.stored_backend_keys() })
+            let error = hub.remove_backend_key(&name).err().map(|e| e.message);
+            Ok(Done::BackendKeyResult { request, name: name.clone(), keys: hub.stored_backend_keys(), error, saved_key: None, forgot: true })
         });
     }
 
@@ -1586,6 +1602,25 @@ impl CraftApp {
             Done::BackendKeys { request, keys } => {
                 if request == self.backend_keys_request {
                     self.backend_keys = Some(keys);
+                }
+            }
+            Done::BackendKeyResult { request, name, keys, error, saved_key, forgot } => {
+                if forgot && error.is_none() {
+                    self.backend_key_inputs.remove(&name);
+                } else if let Some(key) = saved_key
+                    && self.backend_key_inputs.get(&name).is_some_and(|draft| draft.trim() == key)
+                {
+                    self.backend_key_inputs.remove(&name);
+                }
+                if request == self.backend_keys_request {
+                    self.backend_keys = Some(keys);
+                } else {
+                    // A later check superseded this mutation and may have read before it landed.
+                    self.check_backend_keys();
+                }
+                if let Some(error) = error {
+                    self.log(true, error.clone());
+                    self.toast(error, true);
                 }
             }
             Done::ModelChoices { name, result } => match result {

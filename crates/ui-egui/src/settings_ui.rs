@@ -336,6 +336,7 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     let mut save_folder = None;
     // Taken out while the rows borrow the app, and put back after them.
     let mut folder_drafts = std::mem::take(&mut app.folder_inputs);
+    let mut key_drafts = std::mem::take(&mut app.backend_key_inputs);
     let (mut pick_model, mut chosen_model, mut close_picker) = (None, None, false);
     let mut chosen_effort = None;
     let (mut pick_agent_model, mut chosen_agent_model, mut remote_program) = (None, None, None);
@@ -570,42 +571,33 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             });
             // A key saved in the app silently wins over the environment's, so it can be replaced
             // here without removing the AI (#1358). Every API backend can need one; agent apps
-            // sign in their own way.
+            // sign in their own way. The field stays even when a key is saved, so a replacement
+            // doesn't need Forget first.
             if b.kind != BackendKind::AgentCli {
-                match app.backend_keys.as_ref().and_then(|keys| keys.get(&b.name).copied()) {
-                    Some(true) => {
-                        ui.horizontal_wrapped(|ui| {
-                            widgets::pill(ui, "Key saved", t.success, t.raised);
-                            if widgets::secondary(ui, None, "Forget the key").clicked() {
-                                forget_key = Some(b.name.clone());
-                            }
-                        });
-                    }
-                    Some(false) => {
-                        // The draft lives in the UI's own store, so the row can keep borrowing the app.
-                        let id = egui::Id::new(("backend-key", &b.name));
-                        let mut key = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
-                        ui.horizontal_wrapped(|ui| {
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut key)
-                                    .id(id)
-                                    .password(true)
-                                    .hint_text(tr("API key (stored in your system keychain)"))
-                                    .desired_width(260.0)
-                                    .frame(widgets::text_field_frame_compact(&t)),
-                            );
-                            widgets::named(r, &trf("{name} key", &[("name", &b.name)]));
-                            let k = key.trim().to_string();
-                            if widgets::primary_icon(ui, None, "Save", !k.is_empty()).clicked() && !k.is_empty() {
-                                key.clear();
-                                save_key = Some((b.name.clone(), k));
-                            }
-                        });
-                        ui.data_mut(|d| d.insert_temp(id, key));
-                    }
-                    // Still being checked: nothing to show yet.
-                    None => {}
+                if app.backend_keys.as_ref().and_then(|keys| keys.get(&b.name).copied()) == Some(true) {
+                    ui.horizontal_wrapped(|ui| {
+                        widgets::pill(ui, "Key saved", t.success, t.raised);
+                        if widgets::secondary(ui, None, "Forget the key").clicked() {
+                            forget_key = Some(b.name.clone());
+                        }
+                    });
                 }
+                let key = key_drafts.entry(b.name.clone()).or_default();
+                ui.horizontal_wrapped(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(key)
+                            .password(true)
+                            .hint_text(tr("API key (stored in your system keychain)"))
+                            .desired_width(260.0)
+                            .frame(widgets::text_field_frame_compact(&t)),
+                    );
+                    widgets::named(r, &trf("{name} key", &[("name", &b.name)]));
+                    let k = key.trim().to_string();
+                    if widgets::primary_icon(ui, None, "Save", !k.is_empty()).clicked() && !k.is_empty() {
+                        // Keep the draft until the save succeeds; a failure must not lose it.
+                        save_key = Some((b.name.clone(), k));
+                    }
+                });
                 ui.add_space(4.0);
             }
             ui.add_space(6.0);
@@ -679,6 +671,9 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
         });
         ui.add_space(6.0);
     }
+    key_drafts.retain(|name, _| app.backends.iter().any(|backend| &backend.name == name));
+    app.backend_key_inputs = key_drafts;
+    app.folder_inputs = folder_drafts;
     if let Some((name, key)) = save_key {
         app.save_backend_key(name, key);
     }
@@ -701,7 +696,6 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     if let Some((name, program)) = use_program {
         app.set_agent_program(&name, Some(program));
     }
-    app.folder_inputs = folder_drafts;
     if let Some((name, folder)) = save_folder {
         app.set_agent_folder(&name, Some(folder));
     }
@@ -1197,7 +1191,7 @@ mod tests {
         let text = render(&mut app);
         assert!(text.contains("Key saved"), "a saved key says so: {text}");
         assert!(text.contains("Forget the key"), "and can be forgotten without removing the AI: {text}");
-        assert!(!text.contains("API key (stored in your system keychain)"), "no key field once one is saved");
+        assert!(text.contains("API key (stored in your system keychain)"), "and replaced without forgetting it first: {text}");
 
         app.backend_keys = Some(BTreeMap::from([("OpenAI test".to_string(), false)]));
         let text = render(&mut app);
@@ -1245,6 +1239,85 @@ mod tests {
         assert_eq!(app.backend_keys.as_ref().and_then(|keys| keys.get("OpenAI")), Some(&true), "the newer state stays");
         app.handle_done(Finished { job: 2, result: Ok(Done::BackendKeys { request: 2, keys: BTreeMap::from([("OpenAI".to_string(), false)]) }) });
         assert_eq!(app.backend_keys.as_ref().and_then(|keys| keys.get("OpenAI")), Some(&false), "the current check applies");
+    }
+
+    /// A failed key save keeps what was typed; a success clears it only when it is still the same
+    /// text, so an edit made while the save was running is not lost.
+    #[test]
+    fn a_key_draft_survives_a_failed_save_and_a_newer_edit() {
+        use std::collections::BTreeMap;
+
+        let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Experienced, true));
+        app.backend_keys_request = 1;
+        app.backend_key_inputs.insert("OpenAI".into(), "sk-draft".into());
+        app.handle_done(Finished {
+            job: 1,
+            result: Ok(Done::BackendKeyResult {
+                request: 1,
+                name: "OpenAI".into(),
+                keys: BTreeMap::from([("OpenAI".to_string(), false)]),
+                error: Some("keychain is locked".into()),
+                saved_key: None,
+                forgot: false,
+            }),
+        });
+        assert_eq!(app.backend_key_inputs.get("OpenAI").map(String::as_str), Some("sk-draft"), "a failure keeps the draft");
+        assert_eq!(app.backend_keys.as_ref().and_then(|keys| keys.get("OpenAI")), Some(&false), "a failure still refreshes the shown status");
+
+        app.backend_key_inputs.insert("OpenAI".into(), "sk-edited".into());
+        app.handle_done(Finished {
+            job: 2,
+            result: Ok(Done::BackendKeyResult {
+                request: 1,
+                name: "OpenAI".into(),
+                keys: BTreeMap::from([("OpenAI".to_string(), true)]),
+                error: None,
+                saved_key: Some("sk-saved".into()),
+                forgot: false,
+            }),
+        });
+        assert_eq!(app.backend_key_inputs.get("OpenAI").map(String::as_str), Some("sk-edited"), "a newer edit stays");
+
+        app.backend_key_inputs.insert("OpenAI".into(), "sk-saved ".into());
+        app.handle_done(Finished {
+            job: 3,
+            result: Ok(Done::BackendKeyResult {
+                request: 1,
+                name: "OpenAI".into(),
+                keys: BTreeMap::from([("OpenAI".to_string(), true)]),
+                error: None,
+                saved_key: Some("sk-saved".into()),
+                forgot: false,
+            }),
+        });
+        assert!(!app.backend_key_inputs.contains_key("OpenAI"), "the saved draft is cleared");
+
+        app.backend_key_inputs.insert("OpenAI".into(), "sk-next".into());
+        app.handle_done(Finished {
+            job: 4,
+            result: Ok(Done::BackendKeyResult {
+                request: 1,
+                name: "OpenAI".into(),
+                keys: BTreeMap::from([("OpenAI".to_string(), true)]),
+                error: Some("keychain is locked".into()),
+                saved_key: None,
+                forgot: true,
+            }),
+        });
+        assert_eq!(app.backend_key_inputs.get("OpenAI").map(String::as_str), Some("sk-next"), "a failed forget keeps the draft");
+
+        app.handle_done(Finished {
+            job: 5,
+            result: Ok(Done::BackendKeyResult {
+                request: 1,
+                name: "OpenAI".into(),
+                keys: BTreeMap::from([("OpenAI".to_string(), false)]),
+                error: None,
+                saved_key: None,
+                forgot: true,
+            }),
+        });
+        assert!(!app.backend_key_inputs.contains_key("OpenAI"), "a successful forget clears it");
     }
 
     /// A failed worker frees only its own Check button; unrelated pending/results remain intact.

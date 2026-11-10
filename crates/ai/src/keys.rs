@@ -144,18 +144,16 @@ impl KeyStore {
     }
 
     pub fn delete(&self, backend: &str) -> Result<(), ToolError> {
-        if self.use_keychain {
-            keychain::delete(backend);
-        }
+        // A delete that couldn't be confirmed (a locked keychain, a timeout) must not read as
+        // success: the key would still be used. A missing entry is a confirmed delete.
+        let keychain_done = !self.use_keychain || keychain::delete(backend);
         let mut t = self.read_file_to_change()?;
         if t.remove(backend).is_some() {
             self.write_file(&t)?;
         }
-        // A locked or busy keychain may have refused, and it's read first, so the key would still
-        // work. Reading back, not the delete's result: with no keychain at all the delete fails too.
-        if self.use_keychain && keychain::get(backend).is_some() {
-            return Err(ToolError::new(ErrorCode::NoPermission, "The system keychain still has this key, so it wasn't removed.")
-                .with_remediation("Unlock the keychain and try again, or delete the entry from your keychain app."));
+        if !keychain_done {
+            return Err(ToolError::new(ErrorCode::NoPermission, "The system keychain couldn't confirm this key was removed.")
+                .with_remediation("Unlock the keychain and try again, or delete this AI's entry in your keychain app."));
         }
         Ok(())
     }
@@ -187,9 +185,42 @@ mod keychain {
         bounded(move || keyring::Entry::new(SERVICE, &b).ok()?.set_password(&k).ok()).is_some()
     }
 
-    pub fn delete(backend: &str) {
+    /// Delete the entry; `false` when the keychain couldn't confirm it (locked, access denied or
+    /// timed out). A missing entry, or a platform with no keychain to hold one, is `true`: there is
+    /// no key left there to use, so the fallback file is all that remains.
+    pub fn delete(backend: &str) -> bool {
         let b = backend.to_string();
-        let _ = bounded(move || keyring::Entry::new(SERVICE, &b).ok()?.delete_credential().ok());
+        bounded(move || {
+            match keyring::Entry::new(SERVICE, &b) {
+                Ok(entry) => Some(delete_result(entry.delete_credential())),
+                // No keychain backend on this computer: nothing there to delete.
+                Err(_) => Some(true),
+            }
+        })
+        .unwrap_or(false)
+    }
+
+    /// A delete is confirmed when the entry was removed, was already gone, or the platform has no
+    /// keychain to reach (the fallback file is then the only copy). A locked or denied store, and a
+    /// timeout, leave the key possibly still there.
+    fn delete_result(result: Result<(), keyring::Error>) -> bool {
+        match result {
+            Ok(()) | Err(keyring::Error::NoEntry) | Err(keyring::Error::PlatformFailure(_)) => true,
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::delete_result;
+
+        #[test]
+        fn only_a_missing_or_removed_entry_is_confirmed() {
+            assert!(delete_result(Ok(())));
+            assert!(delete_result(Err(keyring::Error::NoEntry)));
+            assert!(delete_result(Err(keyring::Error::PlatformFailure(Box::new(std::io::Error::other("no keychain daemon"))))));
+            assert!(!delete_result(Err(keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("locked"))))));
+        }
     }
 }
 
@@ -202,7 +233,9 @@ mod keychain {
     pub fn set(_: &str, _: &str) -> bool {
         false
     }
-    pub fn delete(_: &str) {}
+    pub fn delete(_: &str) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
