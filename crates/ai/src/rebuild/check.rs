@@ -25,7 +25,10 @@ fn run_in(app: &Path, prog: &Path, args: &[String], minutes: u64, stop: &CheckSt
         // above, which says the step took longer than allowed.
         .cancel_when(move || s.paused())
         .run()
-        .map(|o| (o.success, format!("{}{}", o.stdout_text(), o.stderr_text())))
+        .map(|o| {
+            let (stdout, stderr) = if o.success { (o.stdout_text(), o.stderr_text()) } else { (o.stdout_end_text(), o.stderr_end_text()) };
+            (o.success, format!("{stdout}{stderr}"))
+        })
         .map_err(|e| e.message)
 }
 

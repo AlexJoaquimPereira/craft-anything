@@ -320,7 +320,11 @@ pub(super) fn run_with(cx: &CheckCx, option: &str, file: &Path) -> Result<OwnRun
     let Ok(bytes) = std::fs::read(file) else {
         let why = match &out {
             Ok(o) if !o.success => {
-                format!(" It exited with {}: {}", o.code.map_or("an error".into(), |c| format!("code {c}")), last_lines(&o.stderr_text(), &o.stdout_text()))
+                format!(
+                    " It exited with {}: {}",
+                    o.code.map_or("an error".into(), |c| format!("code {c}")),
+                    last_lines(&o.stderr_end_text(), &o.stdout_end_text())
+                )
             }
             Err(e) => format!(" {}", e.message),
             Ok(_) => String::new(),

@@ -1238,7 +1238,7 @@ impl FailureContext {
     /// Why this run failed, when it was ssh (or the remote computer) that says so.
     fn ssh_failure(&self, out: &craft_anything_platform::Output) -> Option<crate::ssh::SshFailure> {
         let host = self.host.as_deref()?;
-        crate::ssh::diagnose(host, &self.program, crate::ssh::is_git_server(host), out.code, &out.stderr_text())
+        crate::ssh::diagnose(host, &self.program, crate::ssh::is_git_server(host), out.code, &out.end_text())
     }
 
     /// Write the log. Returns its path, or what to tell the person when it couldn't be written.
@@ -1281,7 +1281,7 @@ impl FailureContext {
     fn exit_event(&self, agent: &str, out: &craft_anything_platform::Output) -> AgentEvent {
         let name = display_for(agent);
         let plain = craft_anything_platform::process::nonzero_error_with(&name, out, Some(&self.command));
-        let excerpt = craft_anything_platform::process::output_excerpt(&String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }));
+        let excerpt = craft_anything_platform::process::output_excerpt(&out.end_text());
         let (message, mut remediation) = match self.ssh_failure(out) {
             Some(f) => {
                 let host = self.host.as_deref().unwrap_or_default();
@@ -2053,8 +2053,24 @@ mod tests {
             success: false,
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
+            stdout_tail: Vec::new(),
+            stderr_tail: Vec::new(),
             stdout_truncated: false,
             stderr_truncated: false,
+            duration: Duration::from_millis(400),
+        }
+    }
+
+    fn failed_with_tail(code: i32, head: &str, tail: &str) -> craft_anything_platform::Output {
+        craft_anything_platform::Output {
+            code: Some(code),
+            success: false,
+            stdout: Vec::new(),
+            stderr: head.as_bytes().to_vec(),
+            stdout_tail: Vec::new(),
+            stderr_tail: tail.as_bytes().to_vec(),
+            stdout_truncated: false,
+            stderr_truncated: true,
             duration: Duration::from_millis(400),
         }
     }
@@ -2087,6 +2103,17 @@ mod tests {
             assert!(text.contains(part), "{part} is missing from:\n{text}");
         }
         assert!(!text.contains("private plans"), "the message stays out of the log:\n{text}");
+    }
+
+    /// A truncated SSH failure is diagnosed and quoted from its end, not its kept head.
+    #[test]
+    fn a_truncated_ssh_failure_is_read_from_its_end() {
+        let ev = context(Some("github.com"), None)
+            .exit_event("claude-code", &failed_with_tail(255, "warning: lots of noise\n", "exec request failed on channel 0\n"));
+        let AgentEvent::Error { message, remediation, .. } = ev else { panic!("not an error") };
+        assert!(message.contains("github.com is a git server"), "{message}");
+        let help = remediation.unwrap();
+        assert!(help.contains("exec request failed on channel 0"), "{help}");
     }
 
     #[test]

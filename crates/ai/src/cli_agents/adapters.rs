@@ -1082,12 +1082,14 @@ fn remote_check(host: &str, stop: Option<&CancelToken>) -> Result<(), ToolError>
 
 /// Map the remote failure onto the fix, reusing the ssh failure wording other remote runs use.
 pub(super) fn remote_failure(host: &str, out: &craft_anything_platform::Output) -> ToolError {
-    if let Some(failure) = crate::ssh::diagnose(host, "craft-anything-cli", crate::ssh::is_git_server(host), out.code, out.stderr_text().as_str()) {
+    if let Some(failure) = crate::ssh::diagnose(host, "craft-anything-cli", crate::ssh::is_git_server(host), out.code, out.stderr_end_text().as_str()) {
         return ToolError::new(ErrorCode::EngineMissing, format!("Craft Anything can't set up its tools on {host}: {}.", failure.what))
             .with_remediation(failure.fix);
     }
-    let stderr = out.stderr_text();
-    let snippet: String = stderr.trim().chars().take(200).collect();
+    let end = out.end_text();
+    let trimmed = end.trim();
+    let n = trimmed.chars().count();
+    let snippet: String = trimmed.chars().skip(n.saturating_sub(200)).collect();
     let exit = out.code.map_or_else(|| "it was stopped".to_string(), |code| format!("exit {code}"));
     ToolError::new(ErrorCode::EngineMissing, format!("Craft Anything couldn't set up its tools on {host}: ssh didn't come back as expected ({exit})."))
         .with_remediation(if snippet.is_empty() {
