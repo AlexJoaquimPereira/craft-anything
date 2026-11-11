@@ -1458,9 +1458,11 @@ Gaps found while using the app for real projects.
       (regression from #987); new-project-only options are refused on an attached project
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-reattach-keeps-settings
 - [x] After #1682: an attached project's run uses its saved builder rather than the Make draft's,
-      keeps its live feed when it is already building, and saves a queued request; a start that fails
-      keeps the Make draft
+      keeps its live feed when it is already building, and keeps a queued request with its options;
+      a start that fails keeps the Make draft
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-attached-builder-feed
+- [ ] A queued run's request lives in its `RunOptions` and the in-memory queue; an app exit before
+      it starts loses it. Let the run side keep it (a queue record or a left note) across a restart
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
