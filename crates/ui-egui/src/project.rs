@@ -124,20 +124,38 @@ impl CraftApp {
         self.remember_project(&ws.root);
         self.projects.retain(|p| p.root != ws.root);
         self.projects.insert(0, ws.clone());
-        // Make is cleared for the next one, unless the person has started on it meanwhile (a
-        // project that waited for Ghidra).
-        if self.state.make.request.trim() == request {
-            self.state.make = MakeDraft::default();
-        }
+        let root = ws.root.clone();
         let message = rebuild::project::attached_request(attached, &request);
-        if attached {
-            // The project already has a conversation: keep it, and append the new request.
-            self.state.feed = feed::load(&ws);
-            self.state.feed.push(FeedItem::User(UserItem::Text(request)));
+        // A project already building keeps its live conversation; the request stays in Make for
+        // the person to send later, because a second start can't run beside it.
+        if self.runs.is_running(&root) || self.runs.position(&root).is_some() {
+            self.state.feed = match self.runs.get_mut(&root).filter(|r| r.is_running()) {
+                Some(run) => run.feed_now(),
+                None => feed::load(&ws),
+            };
+            self.start_run(ws, Some(backend), message, None, Vec::new());
+            return;
+        }
+        // An attached project uses the builder it saved; a new one uses the one Make was started with.
+        let backend = if attached {
+            let Some(saved) = self.builder_backend(ws.manifest.builder.as_deref()) else { return self.need_builder(false) };
+            saved
         } else {
-            self.state.feed = vec![FeedItem::User(UserItem::Text(request))];
+            backend
+        };
+        if attached {
+            // The project already has a conversation: keep it, and append the request. The run
+            // records the request in the feed when it starts; the app only reads the feed.
+            self.state.feed = feed::load(&ws);
+            self.state.feed.push(FeedItem::User(UserItem::Text(request.clone())));
+        } else {
+            self.state.feed = vec![FeedItem::User(UserItem::Text(request.clone()))];
         }
         self.start_run(ws, Some(backend), message.clone(), message, Vec::new());
+        // Keep an edited draft; clear it only once this request is running or queued.
+        if self.state.make.request.trim() == request && (self.runs.is_running(&root) || self.runs.position(&root).is_some()) {
+            self.state.make = MakeDraft::default();
+        }
     }
 
     fn run_options(&self, backend: Option<String>, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) -> RunOptions {
@@ -2563,7 +2581,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         ws.set_person(|m| {
-            m.builder = Some("Claude".into());
+            m.builder = Some("Local".into());
             m.asset_budget_usd = 42.0;
             m.generate_assets = true;
         })
@@ -2572,27 +2590,32 @@ mod tests {
         ws.save().unwrap();
         craft_anything_ai::rebuild::feed::save(&ws.root, &[FeedItem::User(UserItem::Text("earlier message".into()))]).unwrap();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        let local = BackendConfig {
+            name: "Local".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "qwen3:8b".into(),
+            // Nothing listens there: the run only has to start and write its feed.
+            base_url: Some("http://127.0.0.1:0/v1".into()),
+            ssh_host: None,
+            enabled: true,
+        };
+        app.backends = vec![local.clone()];
         let mut cfg = AiConfig::default();
-        cfg.upsert(BackendEntry {
-            config: BackendConfig {
-                name: "Local".into(),
-                kind: BackendKind::OpenaiCompatible,
-                model: "qwen3:8b".into(),
-                // Nothing listens there: the run only has to start and write its feed.
-                base_url: Some("http://127.0.0.1:0/v1".into()),
-                ssh_host: None,
-                enabled: true,
-            },
-            options: Default::default(),
-        });
+        cfg.upsert(BackendEntry { config: local, options: Default::default() });
         app.hub.save_config(&cfg).unwrap();
-        app.created(ws.clone(), "add a jump".into(), "Local".into(), None, true);
+        // "Off" isn't a backend: the attached project must use the builder it saved instead.
+        app.created(ws.clone(), "add a jump".into(), "Off".into(), None, true);
         assert!(app.state.feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "earlier message")), "the saved feed is kept: {:?}", app.state.feed);
         assert!(app.state.feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")), "the new request is appended: {:?}", app.state.feed);
+        let saved_feed = craft_anything_ai::rebuild::feed::load(&ws);
+        assert!(
+            saved_feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")),
+            "the run recorded the request in the feed: {saved_feed:?}"
+        );
         let feed = app.runs.get_mut(&ws.root).expect("the run started").feed_now();
         assert!(feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")), "the typed request is the run's follow-up: {feed:?}");
         let saved = Workspace::open(&ws.root).unwrap().manifest;
-        assert_eq!(saved.builder.as_deref(), Some("Claude"), "the saved builder is kept");
+        assert_eq!(saved.builder.as_deref(), Some("Local"), "the saved builder is kept");
         assert_eq!(saved.asset_budget_usd, 42.0, "the saved budget is kept");
         assert!(saved.generate_assets, "the saved asset setting is kept");
         assert_eq!(saved.stack, "Godot", "the saved stack is kept");
