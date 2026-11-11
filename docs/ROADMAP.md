@@ -1457,6 +1457,9 @@ Gaps found while using the app for real projects.
       `generate_assets` and stack, and uses the typed request as a follow-up instead of dropping it
       (regression from #987); new-project-only options are refused on an attached project
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-reattach-keeps-settings
+- [ ] A failed external program's error says "printed last" from the first `stderr_cap` bytes and never
+      says the rest was dropped; keep its last output for the message and say when it was cut
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-stderr-tail
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
