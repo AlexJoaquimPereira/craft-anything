@@ -1457,6 +1457,10 @@ Gaps found while using the app for real projects.
       `generate_assets` and stack, and uses the typed request as a follow-up instead of dropping it
       (regression from #987); new-project-only options are refused on an attached project
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-reattach-keeps-settings
+- [ ] After #1682: an attached project's run uses its saved builder rather than the Make draft's,
+      keeps its live feed when it is already building, and saves a queued request; a start that fails
+      keeps the Make draft
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-attached-builder-feed
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
