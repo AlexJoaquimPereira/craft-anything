@@ -51,7 +51,7 @@ fn fake_builder(bin: &Path) -> PathBuf {
 fn api_config(config: &Path) {
     std::fs::write(
         config.join("config.toml"),
-        "[[ai.backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:9/v1\"\nenabled = true\n",
+        "[[ai.backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:0/v1\"\nenabled = true\n",
     )
     .unwrap();
 }
@@ -60,7 +60,7 @@ fn api_config(config: &Path) {
 fn disabled_config(config: &Path) {
     std::fs::write(
         config.join("config.toml"),
-        "[[ai.backends]]\nname = \"Off\"\nkind = \"anthropic\"\nmodel = \"claude-test\"\nenabled = false\n\n[[ai.backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:9/v1\"\nenabled = true\n",
+        "[[ai.backends]]\nname = \"Off\"\nkind = \"anthropic\"\nmodel = \"claude-test\"\nenabled = false\n\n[[ai.backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:0/v1\"\nenabled = true\n",
     )
     .unwrap();
 }

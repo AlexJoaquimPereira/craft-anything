@@ -652,7 +652,7 @@ mod tests {
                 kind: crate::BackendKind::OpenaiCompatible,
                 model: "qwen3:8b".into(),
                 // Nothing listens there: the run only has to start and write its feed.
-                base_url: Some("http://127.0.0.1:9/v1".into()),
+                base_url: Some("http://127.0.0.1:0/v1".into()),
                 ssh_host: None,
                 enabled: true,
             },

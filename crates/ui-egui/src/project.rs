@@ -130,7 +130,13 @@ impl CraftApp {
             self.state.make = MakeDraft::default();
         }
         let message = rebuild::project::attached_request(attached, &request);
-        self.state.feed = vec![FeedItem::User(UserItem::Text(request))];
+        if attached {
+            // The project already has a conversation: keep it, and append the new request.
+            self.state.feed = feed::load(&ws);
+            self.state.feed.push(FeedItem::User(UserItem::Text(request)));
+        } else {
+            self.state.feed = vec![FeedItem::User(UserItem::Text(request))];
+        }
         self.start_run(ws, Some(backend), message.clone(), message, Vec::new());
     }
 
@@ -2564,6 +2570,7 @@ mod tests {
         .unwrap();
         ws.manifest.stack = "Godot".into();
         ws.save().unwrap();
+        craft_anything_ai::rebuild::feed::save(&ws.root, &[FeedItem::User(UserItem::Text("earlier message".into()))]).unwrap();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
         let mut cfg = AiConfig::default();
         cfg.upsert(BackendEntry {
@@ -2572,7 +2579,7 @@ mod tests {
                 kind: BackendKind::OpenaiCompatible,
                 model: "qwen3:8b".into(),
                 // Nothing listens there: the run only has to start and write its feed.
-                base_url: Some("http://127.0.0.1:9/v1".into()),
+                base_url: Some("http://127.0.0.1:0/v1".into()),
                 ssh_host: None,
                 enabled: true,
             },
@@ -2580,6 +2587,8 @@ mod tests {
         });
         app.hub.save_config(&cfg).unwrap();
         app.created(ws.clone(), "add a jump".into(), "Local".into(), None, true);
+        assert!(app.state.feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "earlier message")), "the saved feed is kept: {:?}", app.state.feed);
+        assert!(app.state.feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")), "the new request is appended: {:?}", app.state.feed);
         let feed = app.runs.get_mut(&ws.root).expect("the run started").feed_now();
         assert!(feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")), "the typed request is the run's follow-up: {feed:?}");
         let saved = Workspace::open(&ws.root).unwrap().manifest;
