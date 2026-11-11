@@ -1149,8 +1149,10 @@ Owner: open · Status: in progress
       single runnable jar in `target/` or `build/libs/` with `java -jar` (Maven now builds with
       `package`); build wrappers stay out of launch
       — PR #1209; claimed: rmsff, branch feature/r2.7-python-java-launch
-- [ ] Audit relative project placements in build, option-run and Play paths too: runtime window
-      capture now normalizes its request paths, but earlier runner paths can still be relative
+- [x] Audit relative project placements in build, option-run and Play paths too: runtime window
+      capture already normalized its request paths; engine build arguments, option runs, console
+      run checks, Play and pins now resolve the program, working directory and output file to
+      absolute paths before starting a child in app/
       — claimed: AlexJoaquimPereira, branch bugfix/r2.7-relative-project-paths
 - [x] Decline a Godot launch when its project path cannot be represented as UTF-8 instead of silently replacing bytes in the selected path.
       — claimed: Afloat16, branch bugfix/r2.7-native-runner-project-args

@@ -214,6 +214,9 @@ project placement, the selected virtualenv interpreter and artifact paths stayed
 PATH lookup can return a relative path too. Resolve workspace paths against the process's
 current directory, look up only bare program names, and make the result absolute without
 dereferencing the virtualenv symlink. Test the generated capture request without opening a GUI.
+The same rule covers every child started in app/: engine build arguments, option files, console
+run checks, Play and pins must get absolute program, working-directory and path arguments; a
+relative one is resolved against app/ again.
 
 **A screenshot helper aborted inside CoreGraphics.** The first macOS screenshot probe used
 ScreenCaptureKit from a command-line Swift helper without initializing AppKit's WindowServer

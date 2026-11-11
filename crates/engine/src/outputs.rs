@@ -136,6 +136,13 @@ fn cargo_programs(app: &Path) -> Vec<String> {
     out
 }
 
+/// The program a child should start when it runs with `app` as its working directory: an
+/// app-relative file is made absolute so the working directory is not applied to it twice. A
+/// bare command name stays for PATH lookup.
+pub fn absolute_program(program: &Path) -> PathBuf {
+    if program.is_relative() && program.components().count() > 1 { crate::workspace::absolute(program) } else { program.to_path_buf() }
+}
+
 /// What "Play" starts for a finished game or app: (program, arguments), run from app/. A Godot
 /// project opens in the Godot it was built with, an Electron app in the Electron it installed.
 /// Other toolchains may declare an interpreted/runner launch when no packaged program exists.

@@ -320,6 +320,8 @@ impl Check for RunsCheck {
         let Some((program, base)) = craft_anything_engine::outputs::launch(&ws.app_dir(), godot.as_deref()) else {
             return Ok(CheckResult::new(self.id(), round, false, screenshot::NO_PROGRAM));
         };
+        let program = craft_anything_engine::outputs::absolute_program(&program);
+        let working_directory = craft_anything_engine::workspace::absolute(&ws.app_dir());
         let out = ws.checks_dir().join(format!("round-{round}")).join(RUNS_DIR);
         std::fs::create_dir_all(&out).map_err(|e| ToolError::io(out.display(), e))?;
         let original_name = match &ws.manifest.target {
@@ -332,7 +334,7 @@ impl Check for RunsCheck {
             let name = original.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
             let mut args = base.clone();
             args.extend(original.get("arguments").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from));
-            let params = json!({"executable": program.display().to_string(), "arguments": args, "working_directory": ws.app_dir().display().to_string(), "timeout_ms": RUN_MS, "idle_timeout_ms": RUN_MS, "settle_ms": 200});
+            let params = json!({"executable": program.display().to_string(), "arguments": args, "working_directory": working_directory.display().to_string(), "timeout_ms": RUN_MS, "idle_timeout_ms": RUN_MS, "settle_ms": 200});
             let built = match cx.call("runtime_walkthrough_record", params) {
                 Ok(o) => run_record(&name, &args, &result_of(&o)),
                 Err(e) => {
@@ -370,6 +372,35 @@ impl Check for RunsCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run check from a relative project must give its child an absolute executable and working
+    /// folder; a relative working folder is refused before the program starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_project_runs_a_console_check() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = std::env::current_dir().unwrap();
+        let d = tempfile::tempdir_in(&cwd).unwrap();
+        let relative = d.path().strip_prefix(&cwd).unwrap();
+        let ws = Workspace::create(relative, "Tool", "a console tool", TargetRef::None).unwrap();
+        let app = ws.app_dir();
+        std::fs::create_dir_all(app.join("target/debug")).unwrap();
+        std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"tool\"\n").unwrap();
+        let program = app.join("target/debug/tool");
+        std::fs::write(&program, "#!/bin/sh\nprintf 'hello\\n'\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let capture = ws.capture_dir().join(RUNS_DIR);
+        std::fs::create_dir_all(&capture).unwrap();
+        std::fs::write(capture.join("no-arguments.json"), r#"{"name":"no arguments","arguments":[],"reason":"exited","exit_code":0,"lines":["hello"]}"#)
+            .unwrap();
+
+        let worker = crate::rebuild::tests::check_worker(&ws, false);
+        let mut cx = CheckCx { worker: &worker, ws: &ws, round: 1, until: None };
+        let result = RunsCheck.run(&mut cx).unwrap();
+        assert!(!result.claims.is_empty(), "{}", result.note);
+        assert!(result.claims.iter().all(|c| c.passed), "{}", result.note);
+    }
 
     #[test]
     fn successful_run_notes_explain_numeric_comparison_limits() {
