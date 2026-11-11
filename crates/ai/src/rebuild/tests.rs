@@ -2773,6 +2773,7 @@ fn a_saved_asset_key_gets_an_api_builders_tool_past_the_key_check() {
     assert!(worker.assets, "the brief and the tools go by the same read");
 }
 
+/// A worker over a test session and the workspace's feed, for check tests.
 pub(crate) fn check_worker(ws: &Workspace, deep: bool) -> Worker {
     let mut s = craft_anything_engine::testing::session();
     s.settings.deep_mode = deep;

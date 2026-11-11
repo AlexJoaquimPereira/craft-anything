@@ -190,6 +190,8 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, la
     start_program(ctx, app, log, another, label, (program, args))
 }
 
+/// Start a program from `app` through the run list, logging to `log`. The program is made absolute
+/// first because the child runs with `app` as its working directory.
 fn start_program(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, label: &str, (program, args): (PathBuf, Vec<String>)) -> Result<Value, ToolError> {
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).map_err(|e| ToolError::io(dir.display(), e))?;

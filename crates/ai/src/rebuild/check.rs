@@ -344,10 +344,14 @@ mod tests {
         assert!(!passed && note.starts_with("Couldn't run the tests"), "it's started: {note}");
     }
 
+    /// A person's own Unity project is opened in batch mode, not built through our execute
+    /// method, and its project path is native and absolute.
     #[test]
     fn a_persons_own_unity_project_is_opened_not_built_with_our_script() {
-        let args = own_unity_args(Path::new("/x/game"));
-        assert!(args.iter().any(|a| a == "-batchmode") && args.iter().any(|a| a == "/x/game"), "{args:?}");
+        let project = std::env::current_dir().unwrap().join("game");
+        let expected = project.display().to_string();
+        let args = own_unity_args(&project);
+        assert!(args.iter().any(|a| a == "-batchmode") && args.iter().any(|a| a == &expected), "{args:?}");
         assert!(!args.iter().any(|a| a == "-executeMethod" || a.contains("CraftBuild")), "{args:?}");
     }
 

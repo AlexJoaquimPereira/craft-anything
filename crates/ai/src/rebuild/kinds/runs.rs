@@ -314,6 +314,7 @@ impl Check for RunsCheck {
         !captured(cx.ws).is_empty()
     }
 
+    /// Run the rebuilt program with each input the original was run with and compare the results.
     fn run(&self, cx: &mut CheckCx) -> Result<CheckResult, ToolError> {
         let (ws, round) = (cx.ws, cx.round);
         let godot = cx.godot();
