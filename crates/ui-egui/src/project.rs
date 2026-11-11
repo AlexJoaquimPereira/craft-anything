@@ -99,31 +99,24 @@ impl CraftApp {
         // The folder, its records and copies of the pictures are written on a worker (a slow or
         // network drive must not freeze the window); `created` starts the build.
         self.creating = Some(self.jobs.spawn(tr("Create the project"), false, move |_| {
+            let attached = draft.folder.as_deref().is_some_and(rebuild::project::has_project);
             let created = match &draft.folder {
-                Some(folder) if folder.join(craft_anything_engine::workspace::MANIFEST).is_file() => Workspace::open(folder),
+                Some(folder) if attached => Workspace::open(folder),
                 Some(folder) => Workspace::create_at(folder, &name, &request, target, draft.existing),
                 None => Workspace::create(&projects_dir, &name, &request, target),
             };
             let mut ws = created.map_err(|e| e.for_people())?;
-            // A new project starts with the asset budget from Settings and the person's choice of
-            // generated assets.
-            if let Some(b) = engine {
-                ws.manifest.stack = b.stack().to_string();
-            }
-            ws.set_person(|m| {
-                m.asset_budget_usd = budget;
-                m.generate_assets = generate;
-                // Picked on Make: its later changes are built by it too.
-                m.builder = draft.ai;
-            })
-            .map_err(|e| e.for_people())?;
+            // A new project starts with the stack, asset budget and builder from Make; a folder
+            // that already held one keeps what the person set there.
+            rebuild::project::apply_new_project_fields(&mut ws, attached, engine.map(|b| b.stack()), budget, generate, draft.ai.as_deref())
+                .map_err(|e| e.for_people())?;
             let pictures = ws.add_references(&draft.pictures).err().map(|e| e.message);
-            Ok(Done::Created { ws: Box::new(ws), request, backend, pictures })
+            Ok(Done::Created { ws: Box::new(ws), request, backend, pictures, attached })
         }));
     }
 
     /// A project from [`Self::start_make`] was made: its build starts.
-    pub(crate) fn created(&mut self, ws: Workspace, request: String, backend: String, pictures: Option<String>) {
+    pub(crate) fn created(&mut self, ws: Workspace, request: String, backend: String, pictures: Option<String>, attached: bool) {
         if let Some(e) = pictures {
             self.toast(format!("{} {}", tr("Couldn't add the pictures:"), e), true);
         }
@@ -136,8 +129,9 @@ impl CraftApp {
         if self.state.make.request.trim() == request {
             self.state.make = MakeDraft::default();
         }
+        let message = rebuild::project::attached_request(attached, &request);
         self.state.feed = vec![FeedItem::User(UserItem::Text(request))];
-        self.start_run(ws, Some(backend), None, None, Vec::new());
+        self.start_run(ws, Some(backend), message.clone(), message, Vec::new());
     }
 
     fn run_options(&self, backend: Option<String>, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) -> RunOptions {
@@ -2538,7 +2532,7 @@ mod tests {
         let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
         let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
         assert!(app.projects.is_empty());
-        app.created(ws.clone(), "A notes app".into(), "test-backend".into(), None);
+        app.created(ws.clone(), "A notes app".into(), "test-backend".into(), None, false);
         assert!(!app.projects.is_empty(), "project is added to app.projects immediately");
         assert_eq!(app.projects[0].root, ws.root);
     }
@@ -2553,6 +2547,47 @@ mod tests {
         app.open_workspace(ws.clone());
         assert!(!app.projects.is_empty(), "open project is listed in app.projects");
         assert_eq!(app.projects[0].root, ws.root);
+    }
+
+    /// An attached folder keeps its saved settings, and its typed request starts the run as a
+    /// follow-up instead of being dropped.
+    #[test]
+    fn an_attached_project_starts_with_the_typed_request() {
+        use craft_anything_ai::{AiConfig, BackendConfig, BackendEntry, BackendKind};
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+        ws.set_person(|m| {
+            m.builder = Some("Claude".into());
+            m.asset_budget_usd = 42.0;
+            m.generate_assets = true;
+        })
+        .unwrap();
+        ws.manifest.stack = "Godot".into();
+        ws.save().unwrap();
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        let mut cfg = AiConfig::default();
+        cfg.upsert(BackendEntry {
+            config: BackendConfig {
+                name: "Local".into(),
+                kind: BackendKind::OpenaiCompatible,
+                model: "qwen3:8b".into(),
+                // Nothing listens there: the run only has to start and write its feed.
+                base_url: Some("http://127.0.0.1:9/v1".into()),
+                ssh_host: None,
+                enabled: true,
+            },
+            options: Default::default(),
+        });
+        app.hub.save_config(&cfg).unwrap();
+        app.created(ws.clone(), "add a jump".into(), "Local".into(), None, true);
+        let feed = app.runs.get_mut(&ws.root).expect("the run started").feed_now();
+        assert!(feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "add a jump")), "the typed request is the run's follow-up: {feed:?}");
+        let saved = Workspace::open(&ws.root).unwrap().manifest;
+        assert_eq!(saved.builder.as_deref(), Some("Claude"), "the saved builder is kept");
+        assert_eq!(saved.asset_budget_usd, 42.0, "the saved budget is kept");
+        assert!(saved.generate_assets, "the saved asset setting is kept");
+        assert_eq!(saved.stack, "Godot", "the saved stack is kept");
+        app.runs.stop_all();
     }
 }
 

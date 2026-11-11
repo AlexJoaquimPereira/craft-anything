@@ -1443,7 +1443,7 @@ Gaps found while using the app for real projects.
       past the run's 90 s limit on the game's run (seen three times with a Unity 6000.6 build)
 - [x] Let waiting notes scroll with the conversation so a long note leaves the live build
       activity and prompt box reachable — claimed: jeffreylm, branch bugfix/r2.9-keep-build-activity-visible
-- [ ] Re-running at a folder that already holds a project keeps its saved builder, asset budget,
+- [x] Re-running at a folder that already holds a project keeps its saved builder, asset budget,
       `generate_assets` and stack, and uses the typed request as a follow-up instead of dropping it
       (regression from #987); new-project-only options are refused on an attached project
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-reattach-keeps-settings

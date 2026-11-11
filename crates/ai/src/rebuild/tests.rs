@@ -3803,6 +3803,54 @@ fn starting_a_project_at_existing_project_folder_attaches_to_it() {
     assert_eq!(reattached.manifest.name, ws.manifest.name);
 }
 
+/// #987 made a folder that already holds a project attach to it. Attaching must not treat the
+/// project as new: its saved builder, asset budget, generate_assets and stack stay, and the typed
+/// request becomes a follow-up instead of being dropped.
+#[test]
+fn reattaching_keeps_the_projects_saved_settings() {
+    let session = craft_anything_engine::testing::session();
+    let d = tempfile::tempdir().unwrap();
+    let folder = d.path().join("mine");
+    let mut ws = project::new_project(&session.settings, "-", "Initial app", project::Place::At(&folder, None), None, false, Some("Claude")).unwrap();
+    ws.set_person(|m| {
+        m.asset_budget_usd = 42.0;
+        m.generate_assets = true;
+        m.builder = Some("Claude".into());
+    })
+    .unwrap();
+    ws.manifest.stack = "Godot".into();
+    ws.save().unwrap();
+
+    let reattached = project::new_project(&session.settings, "-", "Add a jump", project::Place::At(&folder, None), Some("unity"), false, None).unwrap();
+    assert_eq!(reattached.manifest.builder.as_deref(), Some("Claude"), "the saved builder is kept");
+    assert_eq!(reattached.manifest.asset_budget_usd, 42.0, "the saved asset budget is kept");
+    assert!(reattached.manifest.generate_assets, "the saved asset setting is kept");
+    assert_eq!(reattached.manifest.stack, "Godot", "the saved stack is kept");
+    assert_eq!(reattached.manifest.request, "Initial app", "the project's original request stays");
+    assert!(project::has_project(&folder), "the folder is now a project");
+    assert_eq!(
+        project::attached_request(project::has_project(&folder), "Add a jump").as_deref(),
+        Some("Add a jump"),
+        "a request typed for an attached project is its follow-up"
+    );
+    assert_eq!(project::attached_request(false, "A new app"), None, "a new project's request stays its own");
+}
+
+/// A folder that doesn't hold a project yet is created with the stack, builder, asset budget and
+/// generate_assets it was started with; only an attached folder keeps what it had.
+#[test]
+fn a_new_project_gets_the_settings_it_started_with() {
+    let session = craft_anything_engine::testing::session();
+    let d = tempfile::tempdir().unwrap();
+    let folder = d.path().join("new");
+    let ws = project::new_project(&session.settings, "-", "A game", project::Place::At(&folder, None), Some("godot"), true, Some("Claude")).unwrap();
+    assert_eq!(ws.manifest.stack, "Godot", "the picked stack is written");
+    assert_eq!(ws.manifest.builder.as_deref(), Some("Claude"), "the picked builder is written");
+    assert!(ws.manifest.generate_assets, "the asset choice is written");
+    assert_eq!(ws.manifest.asset_budget_usd, session.settings.assets.budget(), "the budget comes from settings");
+    assert_eq!(ws.manifest.request, "A game");
+}
+
 #[test]
 fn a_project_edited_in_place_keeps_what_its_files_are_built_with() {
     use craft_anything_engine::workspace::ExistingFiles::{Edit, StartFrom};

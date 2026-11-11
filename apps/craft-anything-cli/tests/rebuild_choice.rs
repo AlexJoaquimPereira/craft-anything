@@ -230,6 +230,90 @@ fn an_invalid_command_does_not_add_an_agent() {
     assert!(!saved.contains("agent_cli"), "a refused command must not save an agent:\n{saved}");
 }
 
+/// A folder that already holds a project is attached; new-project-only options are refused and
+/// its saved builder, budget, asset setting and stack stay.
+#[test]
+fn a_new_project_option_is_refused_at_an_attached_project() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let config = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    fake_claude(bin.path());
+    let parent = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(parent.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    ws.set_person(|m| {
+        m.builder = Some("Claude".into());
+        m.asset_budget_usd = 42.0;
+        m.generate_assets = true;
+    })
+    .unwrap();
+    ws.manifest.stack = "Godot".into();
+    ws.save().unwrap();
+    let root = ws.root.to_string_lossy().into_owned();
+    for (args, said) in [
+        (
+            vec!["rebuild", "-", "add a jump", "--project-folder", root.as_str(), "--build-with", "rust", "--rounds", "0", "--unattended"],
+            "--build-with is for new projects",
+        ),
+        (
+            vec!["rebuild", "-", "add a jump", "--project-folder", root.as_str(), "--generate-assets", "--rounds", "0", "--unattended"],
+            "--generate-assets is for new projects",
+        ),
+        (
+            vec!["rebuild", "-", "add a jump", "--project-folder", root.as_str(), "--existing", "edit", "--rounds", "0", "--unattended"],
+            "already holds a project",
+        ),
+    ] {
+        let out = cli(&args, config.path(), home.path(), bin.path());
+        let log = out.stderr_text();
+        assert!(!out.success, "{said}: {log}");
+        assert!(log.contains(said), "{said}: {log}");
+    }
+    let saved = Workspace::open(&ws.root).unwrap().manifest;
+    assert_eq!(saved.builder.as_deref(), Some("Claude"), "the saved builder is kept");
+    assert_eq!(saved.asset_budget_usd, 42.0, "the saved budget is kept");
+    assert!(saved.generate_assets, "the saved asset setting is kept");
+    assert_eq!(saved.stack, "Godot", "the saved stack is kept");
+}
+
+/// The success path: an attached folder keeps its settings and its typed request becomes the
+/// run's follow-up (the API has no listener, so the run fails after it starts; the feed is kept).
+#[test]
+fn an_attached_project_sends_the_request_as_a_follow_up() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let config = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    api_config(config.path());
+    let parent = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(parent.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    ws.set_person(|m| {
+        m.builder = Some("Claude".into());
+        m.asset_budget_usd = 42.0;
+        m.generate_assets = true;
+    })
+    .unwrap();
+    ws.manifest.stack = "Godot".into();
+    ws.save().unwrap();
+    let out = cli(
+        &["rebuild", "-", "add a jump", "--project-folder", ws.root.to_str().unwrap(), "--backend", "API", "--rounds", "0", "--unattended"],
+        config.path(),
+        home.path(),
+        bin.path(),
+    );
+    let feed = craft_anything_engine::feed::load(&ws);
+    assert!(
+        feed.iter().any(|i| matches!(i, craft_anything_engine::feed::FeedItem::User(u) if u.text() == "add a jump")),
+        "the request is the run's follow-up:\n{}",
+        out.stderr_text()
+    );
+    let saved = Workspace::open(&ws.root).unwrap().manifest;
+    assert_eq!(saved.builder.as_deref(), Some("Claude"), "the saved builder is kept");
+    assert_eq!(saved.asset_budget_usd, 42.0, "the saved budget is kept");
+    assert!(saved.generate_assets, "the saved asset setting is kept");
+    assert_eq!(saved.stack, "Godot", "the saved stack is kept");
+}
+
 /// The guard must not stop a computer with no AI at all from finding and saving an agent.
 #[test]
 fn a_computer_with_no_ai_still_finds_an_agent() {
