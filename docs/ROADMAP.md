@@ -2169,8 +2169,9 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-source-root-prefix-20261111
 - [x] Preserve embedded source-map contents when safe recovery paths collide, keeping each source identity and index in the manifest.
       — claimed: Afloat16, branch bugfix/r3.12-source-recovery-collisions-20261111
-- [ ] Bound retained path bytes in source-map recovery manifests before repeating expanded source roots, and report partial recovery.
+- [x] Bound retained path bytes in source-map recovery manifests before repeating expanded source roots, and report partial recovery.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-source-recovery-path-budget-20261111
+- [ ] Bound the source-map parser's retained `sources`/`sourcesContent` entries before building millions of small strings from a 64 MiB map.
 - [x] Keep source map annotation URL suffixes intact.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-annotation-20261110
 - [x] Keep DOS relocations inside the declared executable header.

@@ -55,7 +55,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "js_sources_restore",
             title: "Recover readable sources",
-            summary: "Turn minified bundles back into readable files in a new folder: split webpack/esbuild/browserify module tables into one file per module, pretty-print everything, apply safe unminify rewrites (!0→true, void 0→undefined, statement sequences, webpack module parameter names via scope analysis) and write original files embedded in source maps. manifest.json records every input digest, module byte range and output file.",
+            summary: "Turn minified bundles back into readable files in a new folder: split webpack/esbuild/browserify module tables into one file per module, pretty-print everything, apply safe unminify rewrites (!0→true, void 0→undefined, statement sequences, webpack module parameter names via scope analysis) and write original files embedded in source maps. manifest.json records every input digest, module byte range and output file, and says when its path or entry budget left originals out.",
             beginner: "Make squashed JavaScript readable again and split a bundle back into its original pieces.",
             toolset: Toolset::Javascript,
             effects: Effects::MUTATES_SESSION.union(Effects::WRITES_FILESYSTEM),
@@ -438,6 +438,10 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
     Ok((out, notes))
 }
 
+/// Recover pretty-printed files, bundle modules and embedded source-map originals into a new
+/// folder. The recovery manifest keeps at most the source-map inventory's expanded-path budget;
+/// when that budget is reached, the remaining originals are left out and the result says the
+/// recovery is partial.
 fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: RecoverParams = parse_params(params)?;
     if p.additional_paths.len() > 16 {
@@ -458,6 +462,10 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     let mut outputs: Vec<Value> = Vec::new();
     let mut provenance: Vec<Value> = Vec::new();
     let (mut modules_total, mut originals_total, mut printed) = (0usize, 0usize, 0usize);
+    // The source-map parser bounds the inventory it builds; the recovery manifest must not undo
+    // that by repeating every expanded root in its retained outputs.
+    let mut source_budget = craft_anything_formats::sourcemap::InventoryLimits::default();
+    let mut originals_truncated = false;
     for (n, (rel, abs)) in inputs.iter().enumerate() {
         ctx.cancel.check()?;
         ctx.report(Some(n as f32 / inputs.len() as f32), format!("Recovering {rel}"));
@@ -518,6 +526,13 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
                         continue;
                     }
                     let target = format!("sources/{}/{}", stem.trim_end_matches(".js"), safe_module_path(&src, ""));
+                    let retained = src.len().saturating_add(target.len());
+                    if source_budget.max_sources == 0 || retained > source_budget.max_bytes {
+                        originals_truncated = true;
+                        break;
+                    }
+                    source_budget.max_sources -= 1;
+                    source_budget.max_bytes -= retained;
                     let mut comps: Vec<String> = target.split('/').filter(|c| !c.is_empty()).map(String::from).collect();
                     if recovery_path_conflicts(&out, &comps) {
                         // Keep ordinary paths; give each colliding source occurrence its own directory.
@@ -536,26 +551,38 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         }
         provenance.push(record);
     }
-    let manifest = json!({"format": "craft-anything-recovery", "version": 1, "rewrite_level": format!("{level:?}").to_lowercase(), "inputs": provenance, "outputs": outputs, "notes": notes});
+    if originals_truncated {
+        notes.push("source-map originals were left out: the recovery manifest's path or entry budget was reached".into());
+    }
+    let manifest = json!({"format": "craft-anything-recovery", "version": 1, "originals_truncated": originals_truncated, "rewrite_level": format!("{level:?}").to_lowercase(), "inputs": provenance, "outputs": outputs, "notes": notes});
     let mb = serde_json::to_vec_pretty(&manifest).map_err(|e| ToolError::internal(e.to_string()))?;
     write_new_file(&out, &["manifest.json".to_string()], &mb).map_err(|e| ToolError::new(ErrorCode::FileError, e))?;
     let limit = p.limit.clamp(1, 10_000);
     let page: Vec<&Value> = outputs.iter().skip(p.offset).take(limit).collect();
+    let partial = if originals_truncated { " Some originals were left out when the recovery manifest's path or entry budget was reached." } else { "" };
     let summary = format!(
-        "Recovered {} input(s) into {}: {printed} pretty-printed, {modules_total} bundle module file(s), {originals_total} original source(s) from maps.",
+        "Recovered {} input(s) into {}: {printed} pretty-printed, {modules_total} bundle module file(s), {originals_total} original source(s) from maps.{partial}",
         inputs.len(),
         out.display()
     );
-    let ev = EvidenceBuilder::new("js_sources_restore", Subject { kind: "javascript".into(), sha256: None, name: Some(p.path.clone()) }, env(ctx))
+    let mut coverage = Coverage::page(page.len() as u64, outputs.len() as u64, p.offset as u64);
+    if originals_truncated {
+        coverage.status = CoverageStatus::Partial;
+    }
+    let mut b = EvidenceBuilder::new("js_sources_restore", Subject { kind: "javascript".into(), sha256: None, name: Some(p.path.clone()) }, env(ctx))
         .params(json!({"path": p.path, "additional_paths": p.additional_paths, "output_directory": out, "extraction_mode": format!("{:?}", p.extraction_mode).to_lowercase(), "rewrite_level": format!("{level:?}").to_lowercase()}))
-        .result(json!({"output_directory": out, "manifest": out.join("manifest.json"), "inputs": provenance, "outputs": page, "outputs_total": outputs.len(), "notes": notes}))
+        .result(json!({"output_directory": out, "manifest": out.join("manifest.json"), "inputs": provenance, "outputs": page, "outputs_total": outputs.len(), "originals_truncated": originals_truncated, "notes": notes}))
         .summary(summary)
         .confidence(Confidence::Derived)
         .limitation(Limitation::new("rewrites_conservative", "Only rewrites that provably keep meaning are applied; local variable names stay minified."))
-        .limitation(Limitation::new("scope_hoisted", "Rollup/Vite production chunks merge modules into one scope; they are pretty-printed but not split."))
-        .coverage(Coverage::page(page.len() as u64, outputs.len() as u64, p.offset as u64))
-        .location(Location::new("path", out.display().to_string()))
-        .build()?;
+        .limitation(Limitation::new("scope_hoisted", "Rollup/Vite production chunks merge modules into one scope; they are pretty-printed but not split."));
+    if originals_truncated {
+        b = b.limitation(Limitation::new(
+            "source_map_recovery_truncated",
+            "Some original sources were left out after the recovery manifest's path-byte or entry limit was reached.",
+        ));
+    }
+    let ev = b.coverage(coverage).location(Location::new("path", out.display().to_string())).build()?;
     Ok(ToolOutput::evidence(ev))
 }
 
@@ -682,6 +709,42 @@ mod tests {
                 .iter()
                 .any(|output| { output["kind"] == "original-source" && output["source_map_source"] == "src/original.js" })
         );
+    }
+
+    /// A long shared source root must not let the recovery manifest retain more expanded path
+    /// text than the source-map inventory budget. A 64 KiB root and 1,200 tiny sources are only
+    /// about 75 KiB of JSON, but would otherwise retain about 78 MiB of paths.
+    #[test]
+    fn recover_stops_retaining_originals_at_the_path_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("app.js");
+        std::fs::write(&input, "export const compiled = 1;\n//# sourceMappingURL=app.js.map\n").unwrap();
+        let sources: Vec<String> = (0..1_200).map(|i| format!("{i}.js")).collect();
+        let contents = vec![String::new(); sources.len()];
+        let map = json!({
+            "version": 3,
+            "sourceRoot": "r".repeat(64 * 1024),
+            "sources": sources,
+            "sourcesContent": contents,
+            "names": [],
+            "mappings": ""
+        });
+        std::fs::write(input.with_extension("js.map"), serde_json::to_vec(&map).unwrap()).unwrap();
+        let out = dir.path().join("recovered");
+        let e = Engine::new(crate::testing::session());
+        let result = call(&e, "js_sources_restore", json!({"path": input, "output_directory": out})).unwrap();
+        let manifest: Value = serde_json::from_slice(&std::fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(result["result"]["originals_truncated"], true);
+        assert_eq!(manifest["originals_truncated"], true);
+        let originals: Vec<_> = manifest["outputs"].as_array().unwrap().iter().filter(|o| o["kind"] == "original-source").collect();
+        assert!(!originals.is_empty(), "the budget keeps the originals that fit");
+        assert!(originals.len() < 1_200, "not all originals fit the path budget: {}", originals.len());
+        let retained: usize = originals.iter().map(|o| o["source_map_source"].as_str().unwrap().len().saturating_add(o["path"].as_str().unwrap().len())).sum();
+        assert!(retained <= 64 * 1024 * 1024, "retained path bytes are bounded: {retained}");
+        assert!(result["summary"].as_str().unwrap().contains("path or entry budget"), "{}", result["summary"]);
+        assert!(result["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "source_map_recovery_truncated"));
+        assert_eq!(result["coverage"]["status"], "partial");
+        assert_eq!(manifest["notes"], json!(["source-map originals were left out: the recovery manifest's path or entry budget was reached"]));
     }
 
     fn write_recovery_map(input: &std::path::Path, sources: &[&str], contents: &[String]) {

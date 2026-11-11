@@ -516,6 +516,11 @@ only the retained names. Carry inventory truncation through the diff and its evi
 positive matches, report the other sources as uncertain, and keep confirmed unmatched sources
 for complete inventories. Test the consumer with a real exhausted budget, not only the flag.
 
+**A recovery manifest repeated expanded source roots.** The source-map inventory budget did not
+cover the recovery tool, which copied every expanded path into its manifest: a 75 KiB map with a
+64 KiB root and 1,200 sources retained about 78 MiB. Apply the inventory budget to recovery paths
+too, stop retaining originals when it is exhausted, and report partial recovery with a typed flag.
+
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and
 test signaling/quiet pairs as well as different payloads; retain numeric conversion for display.
