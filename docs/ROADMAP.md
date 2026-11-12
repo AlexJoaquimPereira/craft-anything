@@ -2578,7 +2578,7 @@ Owner: open · Status: in progress
 
 - [x] Bound the JavaScript lexer fallback's `endpoints` (fetch calls and URL literals) and
       `exposed` lists to the same `MAX_LIST` cap as the syntax-tree pass, and record `endpoints`
-      in `truncated` when a fetch call is dropped, so a huge or unparsable bundle can't grow the
+      in `truncated` when an endpoint is dropped, so a huge or unparsable bundle can't grow the
       lists without limit.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-js-fallback-list-bounds
 

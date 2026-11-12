@@ -588,8 +588,8 @@ forward declarations and more actual dependencies than the limit permits.
 **A list cap stopped at one parsing path.** The syntax-tree pass bounded `endpoints` and `exposed`,
 but the lexer fallback, used for huge, deeply nested or unparsable sources, pushed to both without
 a limit, so the path chosen for hostile input was the one that could grow. Apply the same cap to
-every push on every path, record the list in `truncated` where the parsed path does, and test the
-fallback with more calls than the cap permits.
+every push on every path, record the list in `truncated` whenever a capped push is dropped, and
+test the fallback with more calls than the cap permits.
 
 **An occurrence label was also a binding name.** The second `obj.x` window and the first
 `obj["x[2]"]` window both appeared as `obj.x[2]`. Reserve literal labels and use a separate

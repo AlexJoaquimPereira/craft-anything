@@ -583,3 +583,17 @@ fn lexer_fallback_caps_endpoints_and_exposed() {
     assert!(a.facts.truncated.iter().any(|t| t == "endpoints"), "{:?}", a.facts.truncated);
     assert_eq!(a.facts.exposed.len(), crate::facts::MAX_LIST);
 }
+
+/// A URL literal dropped at the cap says endpoints were cut even when no fetch was dropped: the
+/// list is incomplete whichever push hit the limit.
+#[test]
+fn lexer_fallback_marks_endpoints_truncated_for_a_dropped_literal() {
+    let limits = Limits { max_parse_bytes: 1, ..Limits::default() };
+    let mut src = "fetch('x');\n".repeat(crate::facts::MAX_LIST);
+    src.push_str("('https://x.test/one');\n");
+    let a = analyze("big.js", &src, &limits);
+    assert_eq!(a.facts.mode, ParseMode::Lexer, "{:?}", a.facts.mode_reason);
+    assert_eq!(a.facts.endpoints.len(), crate::facts::MAX_LIST);
+    assert!(a.facts.endpoints.iter().all(|e| e.api == "fetch"), "{:?}", a.facts.endpoints.last());
+    assert!(a.facts.truncated.iter().any(|t| t == "endpoints"), "{:?}", a.facts.truncated);
+}

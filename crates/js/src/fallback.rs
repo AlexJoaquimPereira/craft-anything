@@ -81,10 +81,20 @@ pub(crate) fn facts_from_tokens(tokens: &[Token<'_>], lines: &LineIndex) -> Modu
                 let v = string_value(raw);
                 if v.len() <= crate::facts::MAX_STRING_LEN && !v.is_empty() && f.strings.len() < crate::facts::MAX_STRINGS && seen.insert(v.clone()) {
                     let lower = v.get(..8).unwrap_or(&v).to_ascii_lowercase();
-                    if (lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ws://") || lower.starts_with("wss://"))
-                        && f.endpoints.len() < crate::facts::MAX_LIST
-                    {
-                        f.endpoints.push(Endpoint { api: "literal".into(), method: None, url: v.clone(), literal: true, line, offset: off, function: None });
+                    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ws://") || lower.starts_with("wss://") {
+                        if f.endpoints.len() < crate::facts::MAX_LIST {
+                            f.endpoints.push(Endpoint {
+                                api: "literal".into(),
+                                method: None,
+                                url: v.clone(),
+                                literal: true,
+                                line,
+                                offset: off,
+                                function: None,
+                            });
+                        } else {
+                            mark_truncated(&mut f, "endpoints");
+                        }
                     }
                     f.strings.push(v);
                 }
