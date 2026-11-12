@@ -2617,7 +2617,7 @@ Owner: open · Status: in progress
       (`scripts_examined`), keeps the unclaimed-unit total complete, marks `rows_capped`, and adds a
       partial-coverage limitation, so a capped window's counts are never read as totals.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-source-bundle-compare-totals
-- [ ] `app_graphs_compare` and `js_exports_compare` cut added, removed, bundle-module and vendor
+- [x] `app_graphs_compare` and `js_exports_compare` cut added, removed, bundle-module and vendor
       rows at 2,000 without saying so, and the app comparison's summary reports the cut lengths as
       totals; report complete counts, mark `rows_capped`, and add partial coverage.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-compare-row-totals

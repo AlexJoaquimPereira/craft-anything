@@ -327,6 +327,7 @@ fn app_graphs_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     ctx.cancel.check()?;
     let (r, rid) = load_graph(ctx, &p.right)?;
     let d = js_compare::compare_versions(&l, &r);
+    let rows_capped = d["rows_capped"].as_bool().unwrap_or(false);
     let summary = format!(
         "{} {} → {}: {} module(s) changed, {} added, {} removed; IPC channels +{} −{}; endpoints +{} −{}.",
         l.label,
@@ -335,12 +336,12 @@ fn app_graphs_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         d["modules"]["changed"].as_array().map_or(0, Vec::len),
         d["modules"]["added"].as_array().map_or(0, Vec::len),
         d["modules"]["removed"].as_array().map_or(0, Vec::len),
-        d["ipc_channels"]["added"].as_array().map_or(0, Vec::len),
-        d["ipc_channels"]["removed"].as_array().map_or(0, Vec::len),
-        d["endpoints"]["added"].as_array().map_or(0, Vec::len),
-        d["endpoints"]["removed"].as_array().map_or(0, Vec::len),
+        d["ipc_channels"]["added_total"].as_u64().unwrap_or(0),
+        d["ipc_channels"]["removed_total"].as_u64().unwrap_or(0),
+        d["endpoints"]["added_total"].as_u64().unwrap_or(0),
+        d["endpoints"]["removed_total"].as_u64().unwrap_or(0),
     );
-    let b = EvidenceBuilder::new(
+    let mut b = EvidenceBuilder::new(
         "app_graphs_compare",
         Subject { kind: "js-app-pair".into(), sha256: None, name: Some(format!("{} vs {}", l.label, r.label)) },
         env(ctx),
@@ -353,6 +354,14 @@ fn app_graphs_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         "tiered_matching",
         "Modules match by path, then identical content, then the same name apart from a bundler's build hash (one on each side; `was` gives the old name), then identical structure; a heavily rewritten module shows as removed + added.",
     ));
+    if rows_capped {
+        b = b
+            .limitation(Limitation::new(
+                "rows_capped",
+                "One or more comparison lists stop at 2,000 rows; the totals beside each list and the summary count every change.",
+            ))
+            .coverage(Coverage { status: CoverageStatus::Partial, ..Default::default() });
+    }
     Ok(ToolOutput::evidence(with_links(b, [lid, rid]).build()?))
 }
 
@@ -361,8 +370,9 @@ fn js_exports_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     let (l, lid) = load_graph(ctx, &p.left)?;
     let (r, rid) = load_graph(ctx, &p.right)?;
     let d = js_compare::compare_export_outlines(&l, &r);
+    let rows_capped = d["rows_capped"].as_bool().unwrap_or(false);
     let summary = format!("{} module(s) compared; {} changed their exports.", d["modules"].as_array().map_or(0, Vec::len), d["changed"]);
-    let b = EvidenceBuilder::new(
+    let mut b = EvidenceBuilder::new(
         "js_exports_compare",
         Subject { kind: "js-app-pair".into(), sha256: None, name: Some(format!("{} vs {}", l.label, r.label)) },
         env(ctx),
@@ -372,6 +382,11 @@ fn js_exports_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     .summary(summary)
     .confidence(Confidence::Derived)
     .limitation(Limitation::new("names_only", "Export names and module.exports kind are compared, not function signatures or types."));
+    if rows_capped {
+        b = b
+            .limitation(Limitation::new("rows_capped", "A module's export diff stops at 2,000 added or removed rows; the totals beside it are complete."))
+            .coverage(Coverage { status: CoverageStatus::Partial, ..Default::default() });
+    }
     Ok(ToolOutput::evidence(with_links(b, [lid, rid]).build()?))
 }
 
@@ -1146,5 +1161,46 @@ mod tests {
         assert_eq!(q["links"][0], inv["id"]);
         let h = call(&e, "harmony_app_graph_build", json!({"path": apk})).unwrap();
         assert_eq!(h["confidence"], "inferred");
+    }
+
+    /// A comparison whose channel list is cut reports complete totals and partial coverage.
+    #[test]
+    fn app_graph_comparison_discloses_capped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = r#"{"name":"channels","main":"main.js"}"#.to_string();
+        let channels =
+            format!("const {{ ipcMain }} = require('electron');\n{}", (0..2001).map(|i| format!("ipcMain.handle('c{i}', () => {{}});\n")).collect::<String>());
+        let left = fx::write_files(&dir.path().join("left"), &[("package.json", package.clone()), ("main.js", String::new())]).unwrap();
+        let right = fx::write_files(&dir.path().join("right"), &[("package.json", package), ("main.js", channels)]).unwrap();
+        let e = Engine::new(crate::testing::session());
+        let d = call(&e, "app_graphs_compare", json!({"left": left, "right": right})).unwrap();
+        assert_eq!(d["result"]["ipc_channels"]["added_total"], 2001);
+        assert_eq!(d["result"]["ipc_channels"]["added"].as_array().unwrap().len(), 2000);
+        assert_eq!(d["result"]["rows_capped"], true);
+        assert!(d["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rows_capped"), "{d}");
+        assert_eq!(d["coverage"]["status"], "partial");
+        let summary = d["summary"].as_str().unwrap();
+        assert!(summary.contains("IPC channels +2001 −0"), "{summary}");
+    }
+
+    /// A capped export diff marks the export comparison and its coverage.
+    #[test]
+    fn export_comparison_discloses_capped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = r#"{"name":"exports","main":"main.js"}"#.to_string();
+        let exports = (0..2001).map(|i| format!("e{i}: {i}")).collect::<Vec<_>>().join(", ");
+        let left = fx::write_files(&dir.path().join("left"), &[("package.json", package.clone()), ("main.js", "module.exports = { base: 1 };\n".to_string())])
+            .unwrap();
+        let right =
+            fx::write_files(&dir.path().join("right"), &[("package.json", package), ("main.js", format!("module.exports = {{ base: 1, {exports} }};\n"))])
+                .unwrap();
+        let e = Engine::new(crate::testing::session());
+        let d = call(&e, "js_exports_compare", json!({"left": left, "right": right})).unwrap();
+        assert_eq!(d["result"]["rows_capped"], true);
+        assert!(d["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rows_capped"), "{d}");
+        assert_eq!(d["coverage"]["status"], "partial");
+        let row = d["result"]["modules"].as_array().unwrap().iter().find(|r| r["right"] == "main.js").unwrap();
+        assert_eq!(row["diff"]["added_total"], 2001);
+        assert_eq!(row["diff"]["added"].as_array().unwrap().len(), 2000);
     }
 }
