@@ -1152,4 +1152,20 @@ mod tests {
         let small = call(&e, "managed_app_graph_build", json!({"input": asm, "max_nodes": 10}));
         assert_eq!(small["result"]["truncated"], true);
     }
+
+    /// A skipped `.gitignore` is named in the managed reader's limitations, not silently dropped.
+    #[test]
+    fn a_skipped_gitignore_is_named_for_managed_sources() {
+        let e = Engine::new(crate::testing::session());
+        let asm = craft_anything_testkit::temp_file("Sample.dll", &fx::managed_assembly(1));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/Calc.cs"), fx::RECONSTRUCTION_CS).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "ignored/\n").unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(dir.path().join(".gitignore")).unwrap();
+        f.set_len(8 * 1024 * 1024).unwrap();
+        let r = call(&e, "managed_reconstruction_check", json!({"members": asm, "source_path": dir.path()}));
+        let limitations = r["limitations"].as_array().unwrap();
+        assert!(limitations.iter().any(|l| l["code"] == "source_read" && l["message"].as_str().is_some_and(|m| m.contains("gitignore"))), "{limitations:?}");
+    }
 }
