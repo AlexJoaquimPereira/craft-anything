@@ -2576,6 +2576,11 @@ Owner: open · Status: in progress
 - [x] Refuse padded and unterminated subidentifiers and cut-off arc lists in code-signature requirement OIDs instead of showing a different OID, and split a long first subidentifier.
       — claimed: NicolasBohn, branch bugfix/r3.12-codesign-oid-subidentifiers
 
+- [ ] Bound the JavaScript lexer fallback's `endpoints` and `exposed` lists to the same `MAX_LIST`
+      cap as the syntax-tree pass, saying when endpoints were cut, so a huge or unparsable bundle
+      can't grow them without limit.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-js-fallback-list-bounds
+
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
