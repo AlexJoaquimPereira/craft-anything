@@ -602,6 +602,11 @@ the buffer before a real dependency appeared. Discover wrapper bindings first an
 recognised dependencies against their limit. Keep the buffer bounded, and test unrelated calls,
 forward declarations and more actual dependencies than the limit permits.
 
+**A capped window's counts read as totals.** A source-to-bundle comparison stopped examining after
+`max_rows` scripts but put its matched/unmatched counts beside the total script count, and reported
+the truncated unclaimed rows as the number of unclaimed units. Report how many were examined, count
+totals separately from listed rows, and mark the cap in the result and the tool's limitation.
+
 **A list cap stopped at one parsing path.** The syntax-tree pass bounded `endpoints` and `exposed`,
 but the lexer fallback, used for huge, deeply nested or unparsable sources, pushed to both without
 a limit, so the path chosen for hostile input was the one that could grow. Apply the same cap to
