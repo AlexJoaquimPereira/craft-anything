@@ -792,6 +792,11 @@ kept; stop at the first thing over a limit; bound what is held while collecting 
 order, so a cut result is the same every time); and test the shapes that never reach the limit on
 the thing counted (no files, only links, one huge folder).
 
+**A graph cap was silent for edges and complete in coverage.** The application graph dropped
+edges past `4 × max_nodes` with no counter, and `js_app_map` reported Complete even when nodes or
+edges had been cut. Count every unique dropped edge, name the cap in a limitation, and make
+coverage partial for either cap. Test a dense graph and a node-capped one.
+
 **Showing settings shows their secrets.** `settings_show` returned the whole settings, plugins'
 `env` values included, which can hold API keys; a tool's output reaches the journal and MCP
 clients. The journal only redacts by field name. When a setting can hold a secret, hide its value

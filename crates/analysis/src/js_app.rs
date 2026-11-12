@@ -322,6 +322,7 @@ struct Builder {
     edges: BTreeSet<Edge>,
     max_nodes: usize,
     dropped_nodes: usize,
+    dropped_edges: usize,
 }
 
 impl Builder {
@@ -341,9 +342,16 @@ impl Builder {
     fn edge(&mut self, from: Option<&str>, to: Option<&str>, kind: &str) {
         if let (Some(f), Some(t)) = (from, to)
             && f != t
-            && self.edges.len() < self.max_nodes.saturating_mul(4)
         {
-            self.edges.insert(Edge { from: f.into(), to: t.into(), kind: kind.into() });
+            let edge = Edge { from: f.into(), to: t.into(), kind: kind.into() };
+            if self.edges.len() >= self.max_nodes.saturating_mul(4) {
+                // A repeated edge is already represented; only a new edge the cap turns away is dropped.
+                if !self.edges.contains(&edge) {
+                    self.dropped_edges += 1;
+                }
+                return;
+            }
+            self.edges.insert(edge);
         }
     }
 }
@@ -440,7 +448,8 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
         }
     }
 
-    let mut b = Builder { nodes: Vec::new(), index: HashMap::new(), edges: BTreeSet::new(), max_nodes: opts.max_nodes.max(16), dropped_nodes: 0 };
+    let mut b =
+        Builder { nodes: Vec::new(), index: HashMap::new(), edges: BTreeSet::new(), max_nodes: opts.max_nodes.max(16), dropped_nodes: 0, dropped_edges: 0 };
     let pkg_node = g.package.as_ref().map(|p| {
         let name = p.get("name").and_then(Value::as_str).unwrap_or("package").to_string();
         b.node(format!("package:{name}"), "package", name, p.get("path").and_then(Value::as_str), None, json!({"version": p.get("version")}))
@@ -1005,6 +1014,16 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
     if b.dropped_nodes > 0 {
         g.limitations
             .push(("node_cap".into(), format!("{} graph nodes were dropped at the {}-node cap; raise max_nodes to keep them.", b.dropped_nodes, b.max_nodes)));
+    }
+    if b.dropped_edges > 0 {
+        g.limitations.push((
+            "edge_cap".into(),
+            format!(
+                "{} graph edges were dropped at the {} edge cap (4 x max_nodes); raise max_nodes to keep them.",
+                b.dropped_edges,
+                b.max_nodes.saturating_mul(4)
+            ),
+        ));
     }
     let lexed = g.modules.iter().filter(|m| m.parse_mode == Some(js::ParseMode::Lexer)).count();
     if lexed > 0 {
