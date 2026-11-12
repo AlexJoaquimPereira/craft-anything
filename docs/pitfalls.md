@@ -615,8 +615,9 @@ coverage with a limitation, as the managed comparison already does.
 **A comparison list was taken for the whole set.** The application comparison cut added, removed,
 bundle-module and vendor rows at 2,000, and its summary counted those cut lists as totals; the
 export comparison cut each module's added/removed diff the same way. Keep a complete total beside
-every capped list, aggregate `rows_capped` for the result, use the totals in summaries, and report
-partial coverage. Test more rows than the cap on every capped path, not only the first one.
+every capped list, aggregate `rows_capped` for the result, including nested function/export diffs of
+changed modules, use the totals in summaries, and report partial coverage. Test more rows than the
+cap on every capped path, not only the first one.
 
 **A list cap stopped at one parsing path.** The syntax-tree pass bounded `endpoints` and `exposed`,
 but the lexer fallback, used for huge, deeply nested or unparsable sources, pushed to both without

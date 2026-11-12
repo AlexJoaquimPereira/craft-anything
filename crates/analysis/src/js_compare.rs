@@ -131,7 +131,9 @@ fn match_modules<'a>(l: &'a [ModuleSummary], r: &'a [ModuleSummary]) -> Value {
         removed.push(m.path.clone());
     }
     let added: Vec<&String> = r.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, x)| &x.path).collect();
-    json!({"unchanged": unchanged, "changed": changed, "moved": moved, "renamed": renamed, "added": added, "removed": removed})
+    let rows_capped =
+        changed.iter().any(|c| c["functions"]["rows_capped"].as_bool().unwrap_or(false) || c["exports"]["rows_capped"].as_bool().unwrap_or(false));
+    json!({"unchanged": unchanged, "changed": changed, "moved": moved, "renamed": renamed, "added": added, "removed": removed, "rows_capped": rows_capped})
 }
 
 fn export_diff(a: &ModuleSummary, b: &ModuleSummary) -> Value {
@@ -305,7 +307,7 @@ pub fn compare_versions(l: &AppGraph, r: &AppGraph) -> Value {
     let urls = diff(&urls(l), &urls(r));
     let routes = diff(&routes(l), &routes(r));
     let native_modules = diff(&natives(l), &natives(r));
-    let rows_capped = [&ipc_channels, &ipc_handlers, &bridge_members, &endpoints, &urls, &routes, &native_modules, &bundle_modules]
+    let rows_capped = [&modules, &ipc_channels, &ipc_handlers, &bridge_members, &endpoints, &urls, &routes, &native_modules, &bundle_modules]
         .iter()
         .any(|d| d["rows_capped"].as_bool().unwrap_or(false))
         || vendors_capped;
@@ -412,6 +414,25 @@ mod tests {
         let same = compare_versions(&a, &a);
         assert_eq!(same["identical_graph"], true);
         assert_eq!(same["modules"]["unchanged"], 4);
+    }
+
+    /// Caps inside a changed module's function and export diffs reach the module and version totals.
+    #[test]
+    fn module_nested_caps_reach_the_comparison() {
+        let module = |sha: &str, prefix: &str| AppGraph {
+            modules: vec![ModuleSummary {
+                path: "main.js".into(),
+                kind: "script".into(),
+                sha256: sha.into(),
+                functions: (0..2001).map(|i| format!("{prefix}f{i}")).collect(),
+                exports: craft_anything_js::ExportShape { cjs: (0..2001).map(|i| format!("{prefix}e{i}")).collect(), ..Default::default() },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let d = compare_versions(&module("a", "l"), &module("b", "r"));
+        assert_eq!(d["modules"]["rows_capped"], true);
+        assert_eq!(d["rows_capped"], true);
     }
 
     /// A capped list keeps its complete total and says rows were cut.

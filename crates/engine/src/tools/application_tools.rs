@@ -1183,6 +1183,26 @@ mod tests {
         assert!(summary.contains("IPC channels +2001 −0"), "{summary}");
     }
 
+    /// Caps inside a changed module's function and export diffs mark the comparison too.
+    #[test]
+    fn app_graph_comparison_discloses_nested_module_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = r#"{"name":"exports","main":"main.js"}"#.to_string();
+        let exports = |prefix: &str| (0..2001).map(|i| format!("{prefix}{i}: {i}")).collect::<Vec<_>>().join(", ");
+        let left =
+            fx::write_files(&dir.path().join("left"), &[("package.json", package.clone()), ("main.js", format!("module.exports = {{ {} }};\n", exports("l")))])
+                .unwrap();
+        let right =
+            fx::write_files(&dir.path().join("right"), &[("package.json", package), ("main.js", format!("module.exports = {{ {} }};\n", exports("r")))])
+                .unwrap();
+        let e = Engine::new(crate::testing::session());
+        let d = call(&e, "app_graphs_compare", json!({"left": left, "right": right})).unwrap();
+        assert_eq!(d["result"]["modules"]["rows_capped"], true, "{d}");
+        assert_eq!(d["result"]["rows_capped"], true, "{d}");
+        assert!(d["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rows_capped"), "{d}");
+        assert_eq!(d["coverage"]["status"], "partial");
+    }
+
     /// A capped export diff marks the export comparison and its coverage.
     #[test]
     fn export_comparison_discloses_capped_rows() {
