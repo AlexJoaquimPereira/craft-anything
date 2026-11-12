@@ -813,6 +813,11 @@ edges past `4 × max_nodes` with no counter, and `js_app_map` reported Complete 
 edges had been cut. Count every unique dropped edge, name the cap in a limitation, and make
 coverage partial for either cap. Test a dense graph and a node-capped one.
 
+**A fact list was cut and the graph looked complete.** `js_app` resolved only the first 2,000
+imports per module and discarded `ModuleFacts.truncated`, so later dependencies lost their edge and
+role with no limitation. Resolve every retained import, aggregate per-file truncation into one
+named limitation, and make the map partial; test both the old 2,000 boundary and the facts limit.
+
 **Showing settings shows their secrets.** `settings_show` returned the whole settings, plugins'
 `env` values included, which can hold API keys; a tool's output reaches the journal and MCP
 clients. The journal only redacts by field name. When a setting can hold a secret, hide its value

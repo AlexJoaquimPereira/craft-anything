@@ -441,8 +441,9 @@ fn js_app_map(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError>
     // A folder that couldn't be listed holds files never counted, so the count can't be complete (#294).
     let unlisted = lims.iter().any(|l| l.code == "unlisted_folders");
     let truncated = lims.iter().any(|l| l.code == "truncated");
-    // A graph cut by its node or edge cap is not complete either, whatever the module page shows.
-    let capped_graph = lims.iter().any(|l| l.code == "node_cap" || l.code == "edge_cap");
+    // A graph cut by its node or edge cap, or a module whose fact lists were cut, is not complete
+    // either, whatever the module page shows.
+    let capped_graph = lims.iter().any(|l| matches!(l.code.as_str(), "node_cap" | "edge_cap" | "facts_truncated"));
     let mut coverage = if complete_modules {
         Coverage {
             status: if read >= listed && !unlisted {
@@ -774,6 +775,28 @@ mod tests {
         let e = Engine::new(crate::testing::session());
         let r = call(&e, "js_app_map", json!({"input_path": dir.path(), "max_nodes": 16})).unwrap();
         assert!(r["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "node_cap"), "{r}");
+        assert_eq!(r["coverage"]["status"], "partial", "{r}");
+    }
+
+    /// A module whose facts list was cut is disclosed and makes the map's coverage partial.
+    #[test]
+    fn an_app_map_with_cut_facts_is_partial_and_disclosed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut source = (0..5000).map(|_| "require('./dep.js');\n").collect::<String>();
+        source.push_str("require('./lost.js');\n");
+        fx::write_files(
+            dir.path(),
+            &[
+                ("package.json", r#"{"name":"imports","main":"main.js"}"#.to_string()),
+                ("main.js", source),
+                ("dep.js", String::new()),
+                ("lost.js", String::new()),
+            ],
+        )
+        .unwrap();
+        let e = Engine::new(crate::testing::session());
+        let r = call(&e, "js_app_map", json!({"input_path": dir.path()})).unwrap();
+        assert!(r["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "facts_truncated"), "{r}");
         assert_eq!(r["coverage"]["status"], "partial", "{r}");
     }
 }
