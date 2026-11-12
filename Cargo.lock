@@ -1315,6 +1315,7 @@ dependencies = [
 name = "craft-anything-js"
 version = "0.6.1"
 dependencies = [
+ "craft-anything-formats",
  "craft-anything-testkit",
  "hex",
  "oxc_allocator",

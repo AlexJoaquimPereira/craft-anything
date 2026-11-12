@@ -549,6 +549,11 @@ external sections on the map and in its inventory, carry the count into the appl
 a limitation, and give an otherwise unmatched source an `uncertain` reason. Test an inline section
 beside an external one, a nested index map, and the sources-only read used for bad mappings.
 
+**A fix landed in one of two copies of a reader.** The `sourceMappingURL` rules were fixed in
+`formats::sourcemap`, but `js::find_map_url` kept requiring a literal space, so a bundle with the
+standard no-space annotation was analysed without its map. Have one implementation and call it
+from both places; a regression at the consumer's public entry point catches a copy that drifts.
+
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and
 test signaling/quiet pairs as well as different payloads; retain numeric conversion for display.

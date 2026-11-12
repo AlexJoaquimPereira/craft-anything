@@ -2313,9 +2313,9 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-sourcemap-annotation-spacing-1111
 - [x] Keep source map annotation URL suffixes intact.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-annotation-20261110
-- [ ] The JavaScript crate's own `sourceMappingURL` reader still needs a literal space and accepts
-      whitespace URLs, so a bundle with the standard no-space annotation is analysed without its
-      map: use the formats reader there too.
+- [x] The JavaScript crate's `sourceMappingURL` reader is the formats reader, so the standard
+      no-space annotation is found, tabs and repeated spaces are accepted, and a URL containing
+      whitespace is rejected, on the parsed and lexer paths alike.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-js-sourcemap-annotation
 - [x] Keep DOS relocations inside the declared executable header.
       — claimed: Afloat16, branch bugfix/r3.12-dos-relocation-header-boundary-20261105
