@@ -1790,6 +1790,11 @@ Owner: open · Status: in progress
 - [x] An application graph counts the edges its cap drops, reports an `edge_cap` limitation, and
       `js_app_map` marks coverage partial when the graph was cut by its node or edge cap.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-app-graph-edge-cap
+- [ ] `js_app` resolves only the first 2,000 imports of a module and drops every
+      `ModuleFacts.truncated` kind, so later dependencies lose their edge and role and no
+      limitation says a list was cut; resolve every retained import, report facts truncation, and
+      make `js_app_map` coverage partial.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-import-facts-truncation
 - [x] Keep sequence splitting from introducing JavaScript strict-mode directives.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-js-sequence-directives
 - [x] Match numeric bundle module and chunk identities by their JavaScript value, so hexadecimal, separated and exponent literals connect to equivalent dependency references.
