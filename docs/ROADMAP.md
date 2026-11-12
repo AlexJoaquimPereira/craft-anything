@@ -1754,6 +1754,10 @@ Owner: open · Status: in progress
       reads and say when one was skipped
 - [ ] The walk's limits are chosen, not measured (4,000,000 entries at most, 256 path bytes an
       entry): time a walk at the ceiling on a real disk and measure what it holds
+- [ ] `core_archives_compare` computes complete counts but cuts the added, removed, changed and
+      moved lists at `max_rows` without saying so: mark the rows capped and report partial
+      coverage, as the managed comparison does.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.11-archive-compare-rows
 
 ### R3.12 Format parser correctness
 Owner: open · Status: in progress
