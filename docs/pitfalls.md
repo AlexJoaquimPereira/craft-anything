@@ -542,6 +542,13 @@ cover the recovery tool, which copied every expanded path into its manifest: a 7
 64 KiB root and 1,200 sources retained about 78 MiB. Apply the inventory budget to recovery paths
 too, stop retaining originals when it is exhausted, and report partial recovery with a typed flag.
 
+**An unread part of a source map looked like absent sources.** An index-map section can point at
+another map (`url`), which the parser never fetches: it kept the section boundary but no count, so
+a source comparison reported a source only that map lists as confirmed missing. Count unread
+external sections on the map and in its inventory, carry the count into the application graph with
+a limitation, and give an otherwise unmatched source an `uncertain` reason. Test an inline section
+beside an external one, a nested index map, and the sources-only read used for bad mappings.
+
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and
 test signaling/quiet pairs as well as different payloads; retain numeric conversion for display.

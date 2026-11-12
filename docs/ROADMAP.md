@@ -2297,8 +2297,10 @@ Owner: open · Status: in progress
 - [x] A source map refused for bad mappings or sections still has a readable `sources` list: keep those sources with a
       warning instead of reporting the whole map unreadable.
       — claimed: NicolasBohn, branch bugfix/r3.12-sources-of-bad-mappings
-- [ ] An index-map section that points at an external map (`url`) adds no sources, so an application graph still
-      treats the map's list as complete: mark those sources uncertain until the external map is read.
+- [x] An index-map section that points at an external map (`url`) adds no sources. The parser counts those
+      unread sections, an application graph records them with a limitation, and a source comparison reports
+      otherwise unmatched sources as uncertain (`source_map_external_sections`) with partial coverage instead
+      of missing.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-source-map-external-sections
 - [x] Recognize source-map annotations with no space, tabs or repeated spaces after the marker, and reject whitespace inside their URLs.
       — claimed: Plastic-time, branch bugfix/r3.12-sourcemap-annotation-spacing-1111
