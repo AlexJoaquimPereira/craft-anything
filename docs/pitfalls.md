@@ -607,6 +607,11 @@ forward declarations and more actual dependencies than the limit permits.
 the truncated unclaimed rows as the number of unclaimed units. Report how many were examined, count
 totals separately from listed rows, and mark the cap in the result and the tool's limitation.
 
+**A row cap kept the counts but lost the rows silently.** An archive comparison counted every
+added, removed, changed and moved file, then listed only `max_rows` of each with no flag, so a
+reader took the lists for complete. Set `rows_capped` beside the counts and report partial
+coverage with a limitation, as the managed comparison already does.
+
 **A list cap stopped at one parsing path.** The syntax-tree pass bounded `endpoints` and `exposed`,
 but the lexer fallback, used for huge, deeply nested or unparsable sources, pushed to both without
 a limit, so the path chosen for hostile input was the one that could grow. Apply the same cap to

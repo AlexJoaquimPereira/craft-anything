@@ -946,12 +946,16 @@ fn inventory_input(ctx: &Ctx<'_>, v: &Value) -> Result<(Inventory, Option<String
     Ok((inv, Some(ev.id)))
 }
 
+/// Compare two inventories, reporting capped row lists and partial coverage while the counts stay
+/// complete.
 fn core_archives_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: CompareArtifactsParams = parse_params(params)?;
     let (l, lid) = inventory_input(ctx, &p.left)?;
     ctx.cancel.check()?;
     let (r, rid) = inventory_input(ctx, &p.right)?;
-    let d = compare_inventories(&l, &r, p.max_rows.clamp(1, 100_000));
+    let max_rows = p.max_rows.clamp(1, 100_000);
+    let d = compare_inventories(&l, &r, max_rows);
+    let rows_capped = d["rows_capped"].as_bool().unwrap_or(false);
     let c = &d["counts"];
     let summary = format!(
         "{} → {}: {} added, {} removed, {} changed, {} moved, {} unchanged.",
@@ -968,6 +972,11 @@ fn core_archives_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput,
     .confidence(Confidence::Derived);
     if l.truncated || r.truncated {
         b = b.limitation(Limitation::new("truncated", "One inventory was cut short by a limit; files beyond it are not compared."));
+    }
+    if rows_capped {
+        b = b
+            .limitation(Limitation::new("rows_capped", format!("lists are capped at max_rows={max_rows}; counts are complete")))
+            .coverage(Coverage { status: craft_anything_evidence::CoverageStatus::Partial, ..Default::default() });
     }
     for id in [lid, rid].into_iter().flatten() {
         b = b.link(id);
@@ -1094,6 +1103,22 @@ mod tests {
         let d2 = call(&e, "core_archives_compare", json!({"left": {"kind": "saved", "evidence_id": id}, "right": b})).unwrap();
         assert_eq!(d2["result"]["counts"], d["result"]["counts"]);
         assert!(call(&e, "core_archives_compare", json!({"left": "relative/path", "right": b})).is_err());
+    }
+
+    /// A comparison with more changed files than `max_rows` reports the complete counts but says
+    /// the rows were capped, with partial coverage.
+    #[test]
+    fn archive_compare_discloses_capped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fx::write_files(&dir.path().join("v1"), &fx::notes_app_files()).unwrap();
+        let b = fx::write_files(&dir.path().join("v2"), &fx::notes_app_v2_files()).unwrap();
+        let e = Engine::new(crate::testing::session());
+        let d = call(&e, "core_archives_compare", json!({"left": a, "right": b, "max_rows": 1})).unwrap();
+        assert_eq!(d["result"]["counts"]["changed"], 2, "{}", d["result"]);
+        assert_eq!(d["result"]["changed"].as_array().map(Vec::len), Some(1), "{}", d["result"]);
+        assert_eq!(d["result"]["rows_capped"], true);
+        assert!(d["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rows_capped"), "{d}");
+        assert_eq!(d["coverage"]["status"], "partial", "{d}");
     }
 
     #[test]
