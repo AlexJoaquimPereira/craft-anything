@@ -618,6 +618,9 @@ Owner: open · Status: todo
 ### R5.6 Tools report only what they saw
 Owner: open · Status: todo
 Golden rule 3: the result is evidence. Each fix needs a Mac to test on.
+- [ ] `core_report_write` renders only the first 30 distinct limitations in Markdown and HTML with
+      no marker for the rest; say how many were omitted in both formats.
+      — claimed: AlexJoaquimPereira, branch bugfix/r5.6-report-limitation-count
 - [x] macOS: a denied Accessibility permission is reported as success with an empty tree (#240)
       — claimed: mavericzz, branch bugfix/r5.6-accessibility-denied; PR #887
 - [x] macOS: `runtime_ui_read` captures a requested screenshot (#248): one on-screen window
