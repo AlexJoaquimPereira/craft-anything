@@ -802,6 +802,12 @@ kept; stop at the first thing over a limit; bound what is held while collecting 
 order, so a cut result is the same every time); and test the shapes that never reach the limit on
 the thing counted (no files, only links, one huge folder).
 
+**An ignore file was read whole.** `walk_dir` read each `.gitignore` with `read_to_string` and
+swallowed every error: a sparse oversized file could size the allocation until the process aborted,
+a FIFO at that path could block the walk, and an unreadable or non-UTF-8 file lost its rules with no
+limitation. Read it through the capped, regular-file-checked helper, keep the cap well above real
+ignore files, and name every skipped file in the evidence; an absent file is the only silent case.
+
 **A graph cap was silent for edges and complete in coverage.** The application graph dropped
 edges past `4 × max_nodes` with no counter, and `js_app_map` reported Complete even when nodes or
 edges had been cut. Count every unique dropped edge, name the cap in a limitation, and make

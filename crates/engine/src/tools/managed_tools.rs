@@ -791,6 +791,9 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
                 },
                 &ctx.cancel,
             )?;
+            for (ignore_path, why) in &walked.skipped_gitignores {
+                notes.push(format!("{ignore_path}: .gitignore rules skipped ({why}); files it ignores may be read"));
+            }
             let mut out = Vec::new();
             let mut total = 0u64;
             for f in walked.files.iter().filter(|f| f.rel.to_ascii_lowercase().ends_with(".cs")) {
