@@ -612,6 +612,11 @@ added, removed, changed and moved file, then listed only `max_rows` of each with
 reader took the lists for complete. Set `rows_capped` beside the counts and report partial
 coverage with a limitation, as the managed comparison already does.
 
+**A report showed a prefix of its limitations as the whole list.** `core_report_write` rendered
+only the first 30 distinct limitations in Markdown and HTML with no marker for the rest, so a
+reader could mistake a capped list for everything the evidence said. Keep the display cap for
+readability but name how many were omitted in both formats; test one more limitation than the cap.
+
 **A comparison list was taken for the whole set.** The application comparison cut added, removed,
 bundle-module and vendor rows at 2,000, and its summary counted those cut lists as totals; the
 export comparison cut each module's added/removed diff the same way. Keep a complete total beside

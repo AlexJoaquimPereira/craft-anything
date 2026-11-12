@@ -585,6 +585,10 @@ the tool opens an installer where supported, or reports the download page and re
 on loopback, and `project_open_folder` opens its folder. A preview lasts for the session; use
 `wait` to keep a CLI preview serving until cancellation. The desktop app calls these tools too.
 
+`core_report_write` lists up to 30 distinct limitations and then says how many it omitted, in both
+Markdown and HTML; a report with 30 or fewer is unchanged. Checked with 31 synthetic limitations;
+the omitted marker is absent on the former renderer.
+
 Checked against the registered tool implementations and rebuild feed writer; no live install,
 launch or preview was run for this documentation correction.
 
