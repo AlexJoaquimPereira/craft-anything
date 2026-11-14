@@ -241,6 +241,18 @@ fn exhausted_yield_lookahead_fails_closed() {
     assert!(admit("yield /a[0]/g;", &limits).is_ok(), "a compact regex after yield is still admitted");
 }
 
+/// A `yield /…/` regex whose following token differs between the regex and division readings
+/// fails admission closed; a compact regex with a plain follow is still admitted.
+#[test]
+fn ambiguous_regex_with_a_diverging_follow_fails_closed() {
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    for src in ["yield /a[0]/ /b[1]/;", "yield /a[0]/ ++b;"] {
+        assert!(admit(src, &limits).is_err(), "{src}");
+        assert_eq!(analyze("d.js", src, &limits).facts.mode, ParseMode::Lexer, "{src}");
+    }
+    assert!(admit("yield /a[0]/g;", &limits).is_ok(), "the compact regex control");
+}
+
 #[test]
 fn junk_never_panics() {
     let samples = [

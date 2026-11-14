@@ -124,6 +124,9 @@ pub(crate) struct Scanned {
     /// The shared `yield /…/` lookahead budget ran out before a line ended, so whether those
     /// slashes are regexes or division is unknown; admission fails closed.
     pub lookahead_exhausted: bool,
+    /// A `yield /…/` read as a regex is followed by `/`, `++` or `--`, which the division reading
+    /// would tokenize differently; admission fails closed.
+    pub ambiguous_follow: bool,
 }
 
 /// Stream tokens to `emit` without storing them. Returns true when `max_tokens` stopped it.
@@ -134,6 +137,10 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, emit: impl FnMut(Token<'a>)) ->
 pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)) -> Scanned {
     let b = src.as_bytes();
     let mut lookahead_exhausted = false;
+    let mut ambiguous_follow = false;
+    // Set after a `yield /…/` read as a regex: the division reading ends in a `/` token instead,
+    // so the next `/`, `++` or `--` would be classified differently.
+    let mut after_ambiguous_regex = false;
     let mut count = 0usize;
     let mut i = 0usize;
     // true = this brace opened a template substitution `${`.
@@ -161,7 +168,7 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
             continue;
         }
         if count >= max_tokens {
-            return Scanned { truncated: true, lookahead_exhausted };
+            return Scanned { truncated: true, lookahead_exhausted, ambiguous_follow };
         }
         count += 1;
         let start = i;
@@ -182,6 +189,12 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
             i = (i + 2).min(b.len());
             emit(Token { kind: TokKind::Comment, text: slice(start, i), offset: start, ambiguous_regex: false });
             continue;
+        }
+        if after_ambiguous_regex {
+            // Comments above keep the flag: the next real token decides. The flag is replaced by
+            // this token's own state at the end of the iteration.
+            let diverges = (c == b'/' && next != b'/' && next != b'*') || ((c == b'+' || c == b'-') && next == c);
+            ambiguous_follow |= diverges;
         }
         let tok_kind;
         let mut ambiguous_regex = false;
@@ -299,8 +312,9 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
         last_member = tok_kind == TokKind::Ident && matches!(last_sig, Some((TokKind::Punct, "." | "?.")));
         last_sig = Some((tok_kind, text));
         emit(Token { kind: tok_kind, text, offset: start, ambiguous_regex });
+        after_ambiguous_regex = ambiguous_regex;
     }
-    Scanned { truncated: false, lookahead_exhausted }
+    Scanned { truncated: false, lookahead_exhausted, ambiguous_follow }
 }
 
 /// Whether a `/` starts a regex, divides, or is the ambiguous `yield /…`.
