@@ -207,6 +207,18 @@ fn deep_and_broken_sources_fall_back() {
     assert_ne!(run("ok.js", &ok).facts.mode, ParseMode::Lexer);
     let broken = run("b.js", "const x = require('electron'); ipcMain.handle('ch', () => { ) } }}}");
     assert!(broken.facts.ipc.iter().any(|i| i.channel.as_deref() == Some("ch")) || broken.facts.imports.iter().any(|i| i.specifier == "electron"));
+    // Shapes the estimator used to admit, which then overflowed the parser's stack.
+    let n = 6_000;
+    for (what, src) in [
+        ("else-if chain", format!("if(a);{}", "else if(a);".repeat(n))),
+        ("class extends chain", format!("x = class{};", " extends class".repeat(n) + " {}")),
+        ("prefix ++ run", format!("x = {}a;", "++".repeat(n))),
+        ("brackets after an update operator", format!("x = a++ /{} / 1;", "[".repeat(n) + &"]".repeat(n))),
+    ] {
+        let f = run("deep.js", &src).facts;
+        assert_eq!(f.mode, ParseMode::Lexer, "{what}");
+        assert!(f.mode_reason.as_deref().unwrap_or("").contains("nests"), "{what}: {:?}", f.mode_reason);
+    }
 }
 
 #[test]

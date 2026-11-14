@@ -643,6 +643,14 @@ a limit, so the path chosen for hostile input was the one that could grow. Apply
 every push on every path, record the list in `truncated` where the parsed path does, and test the
 fallback with more calls than the cap permits.
 
+**A nesting guard missed the shapes it exists for.** The JavaScript nesting estimate counted
+brackets and some keywords, but an `else if` chain lost its depth at every `;`, `extends` and a run
+of prefix `++` counted nothing, and the tokenizer read `/` after `++`, after a member name or after
+`yield` as a regex, hiding the brackets in the text after it. Sources that estimated one or two
+levels then overflowed the parser thread's stack and aborted the process. Count every shape the
+parser recurses through, and test that a deep source reaches the lexer fallback with a nesting
+reason instead of being parsed.
+
 **An occurrence label was also a binding name.** The second `obj.x` window and the first
 `obj["x[2]"]` window both appeared as `obj.x[2]`. Reserve literal labels and use a separate
 disambiguator for collisions; never change the occurrence index to make a label unique. Include

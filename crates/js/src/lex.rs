@@ -29,7 +29,42 @@ const PUNCTS: &[&str] = &[
     "*=", "/=", "%=", "&=", "|=", "^=", "**", "<<", ">>",
 ];
 
-const REGEX_AFTER_KEYWORDS: &[&str] = &["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"];
+/// Words after which `/` starts a regex. `yield` is left out: in a script that needs the lexer
+/// fallback it is usually an identifier, and reading the text after it as division only
+/// over-estimates nesting, which safely sends the source to the fallback.
+const REGEX_AFTER_KEYWORDS: &[&str] = &["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "await"];
+
+/// Words after which `++`/`--` starts an expression instead of updating a value. Missing one
+/// would under-count, so this list errs towards treating a word as expression-starting.
+const EXPRESSION_KEYWORDS: &[&str] = &[
+    "return",
+    "throw",
+    "typeof",
+    "void",
+    "delete",
+    "await",
+    "new",
+    "in",
+    "instanceof",
+    "of",
+    "yield",
+    "case",
+    "do",
+    "else",
+    "if",
+    "for",
+    "while",
+    "with",
+    "var",
+    "let",
+    "const",
+    "class",
+    "extends",
+    "function",
+    "default",
+    "import",
+    "export",
+];
 
 fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_' || b == b'$' || b == b'\\' || b >= 0x80
@@ -78,6 +113,8 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
     let mut braces: Vec<bool> = Vec::new();
     let slice = |a: usize, z: usize| src.get(a..z).unwrap_or("");
     let mut last_sig: Option<(TokKind, &str)> = None;
+    // Whether the last token was a name after `.`/`?.`: `x.of /` divides, it does not start a regex.
+    let mut last_member = false;
     while i < b.len() {
         let c = b.get(i).copied().unwrap_or(0);
         if c.is_ascii_whitespace() {
@@ -170,7 +207,7 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
                 }
             }
             tok_kind = TokKind::Number;
-        } else if c == b'/' && regex_allowed(last_sig) {
+        } else if c == b'/' && regex_allowed(last_sig, last_member) {
             i += 1;
             let mut in_class = false;
             while let Some(&d) = b.get(i) {
@@ -206,16 +243,21 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
             tok_kind = TokKind::Punct;
         }
         let text = slice(start, i);
+        last_member = tok_kind == TokKind::Ident && matches!(last_sig, Some((TokKind::Punct, "." | "?.")));
         last_sig = Some((tok_kind, text));
         emit(Token { kind: tok_kind, text, offset: start });
     }
     false
 }
 
-fn regex_allowed(prev: Option<(TokKind, &str)>) -> bool {
+fn regex_allowed(prev: Option<(TokKind, &str)>, after_member: bool) -> bool {
+    if after_member {
+        // `x.of /`, `x.in /`: a property name is a value, so `/` divides.
+        return false;
+    }
     match prev {
         None => true,
-        Some((TokKind::Punct, p)) => !matches!(p, ")" | "]" | "}"),
+        Some((TokKind::Punct, p)) => !matches!(p, ")" | "]" | "}" | "++" | "--"),
         Some((TokKind::Ident, w)) => REGEX_AFTER_KEYWORDS.contains(&w),
         Some(_) => false,
     }
@@ -339,11 +381,20 @@ pub struct Nesting {
     recent: Recent,
     /// What a bracket that just closed had counted, for the expression it may go on in.
     carry: usize,
+    /// What a `;` cleared at this level, in case the next token is `else`: an
+    /// `if (a); else if (b); else …` chain nests one level per link though each link ends with `;`.
+    pending_semi: usize,
+    /// Whether the last token can end an expression, so `++`/`--` after it is postfix.
+    prev_value: bool,
+    /// Whether the last token was `++`/`--`; a following one is prefix, never postfix.
+    prev_update: bool,
+    /// Whether the last token was `extends`, so a `class` after it is a nested heritage.
+    prev_extends: bool,
 }
 
 impl Default for Nesting {
     fn default() -> Self {
-        Nesting { stack: vec![0], sum: 0, max: 0, recent: Recent::Other, carry: 0 }
+        Nesting { stack: vec![0], sum: 0, max: 0, recent: Recent::Other, carry: 0, pending_semi: 0, prev_value: false, prev_update: false, prev_extends: false }
     }
 }
 
@@ -353,7 +404,18 @@ impl Nesting {
         if t.kind == TokKind::Comment {
             return;
         }
-        let Nesting { stack, sum, max, recent, carry } = self;
+        let Nesting { stack, sum, max, recent, carry, pending_semi, prev_value, prev_update, prev_extends } = self;
+        // `if (a); else if (a); else …`: each link ends with `;`, but the next link nests inside
+        // it, so put back what the `;` cleared when `else` follows.
+        let cleared = std::mem::take(pending_semi);
+        if cleared != 0
+            && t.kind == TokKind::Ident
+            && t.text == "else"
+            && let Some(n) = stack.last_mut()
+        {
+            *n += cleared;
+            *sum = sum.saturating_add(cleared);
+        }
         // `((f)())()`, `f(g(x)())()`, `(a + b) + c`: what follows a closed bracket wraps the
         // expression it ended, so that expression's depth goes on counting at this level. Siblings
         // (`(a) && (b)`) don't add up: the deepest one counts.
@@ -410,7 +472,10 @@ impl Nesting {
         }
         if !opens && !closes {
             let nests = match t.kind {
-                TokKind::Punct => !matches!(t.text, "," | ";" | ":" | "++" | "--"),
+                TokKind::Punct => !matches!(t.text, "," | ";" | ":") && !(matches!(t.text, "++" | "--") && *prev_value && !*prev_update),
+                // `class extends class extends …`: each class after `extends` nests a heritage.
+                // `extends` itself would accumulate across separate declarations, which don't nest.
+                TokKind::Ident if t.text == "class" => *prev_extends,
                 TokKind::Ident => matches!(
                     t.text,
                     "typeof" | "void" | "delete" | "await" | "new" | "if" | "else" | "for" | "while" | "do" | "with" | "in" | "instanceof" | "yield"
@@ -419,8 +484,12 @@ impl Nesting {
             };
             if let Some(n) = stack.last_mut() {
                 if matches!((t.kind, t.text), (TokKind::Punct, "," | ";")) {
-                    *sum = sum.saturating_sub(*n);
+                    let cleared = *n;
+                    *sum = sum.saturating_sub(cleared);
                     *n = 0;
+                    if t.text == ";" {
+                        *pending_semi = cleared;
+                    }
                 } else if nests {
                     *n += 1;
                     *sum += 1;
@@ -428,6 +497,16 @@ impl Nesting {
             }
         }
         *max = (*max).max(*sum);
+        // What the next token sees: `a++` is postfix, `++a` and `++++a` are prefix.
+        *prev_value = match t.kind {
+            TokKind::Number | TokKind::Str | TokKind::Regex => true,
+            TokKind::Ident => !EXPRESSION_KEYWORDS.contains(&t.text),
+            TokKind::Punct => matches!(t.text, ")" | "]" | "++" | "--"),
+            TokKind::Template => t.text.len() > 1 && t.text.ends_with('`'),
+            TokKind::Comment => false,
+        };
+        *prev_update = t.kind == TokKind::Punct && matches!(t.text, "++" | "--");
+        *prev_extends = t.kind == TokKind::Ident && t.text == "extends";
     }
 }
 
@@ -513,6 +592,33 @@ mod tests {
         let nots = nesting_estimate(&tokenize(&format!("{}x", "!".repeat(400)), 10_000).0);
         assert!(shallow < 5, "{shallow}");
         assert!(deep >= 300 && chain >= 500 && nots >= 400, "{deep} {chain} {nots}");
+    }
+
+    #[test]
+    fn nesting_counts_else_if_extends_prefix_update_and_hidden_brackets() {
+        let deep = |src: String| nesting_estimate(&tokenize(&src, 100_000).0);
+        let n = 5_000;
+        let else_if = format!("if(a);{}", "else if(a);".repeat(n));
+        assert!(deep(else_if) > n, "else-if chain");
+        let extends = format!("x = class{};", " extends class".repeat(n) + " {}");
+        assert!(deep(extends) > n, "class extends chain");
+        let separate = "class A extends B {}".repeat(n);
+        assert!(deep(separate) < 16, "separate extended classes do not add up");
+        let prefix = format!("x = {}a;", "++".repeat(n));
+        assert!(deep(prefix) > n, "prefix ++ run");
+        let hidden = format!("x = a++ /{} / 1;", "[".repeat(n) + &"]".repeat(n));
+        assert!(deep(hidden) > n, "brackets after an update operator");
+    }
+
+    #[test]
+    fn division_follows_updates_members_and_yield() {
+        for src in ["a++ / b[0] / c", "x.of / b[0] / c", "x?.of / b[0] / c", "yield / b[0] / c"] {
+            let kinds: Vec<TokKind> = tokenize(src, 100).0.into_iter().map(|t| t.kind).collect();
+            assert!(!kinds.contains(&TokKind::Regex), "{src}: {kinds:?}");
+        }
+        // A word that really starts an expression still reads `/` as a regex.
+        let regex = tokenize("return /a[0]/g", 100).0;
+        assert!(regex.iter().any(|t| t.kind == TokKind::Regex));
     }
 
     #[test]
