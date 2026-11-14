@@ -110,8 +110,13 @@ pub fn admit(src: &str, limits: &Limits) -> Result<(), String> {
         return Err(format!("{} bytes is over the {}-byte parse limit", src.len(), limits.max_parse_bytes));
     }
     let mut nesting = lex::Nesting::default();
-    let truncated = lex::scan(src, limits.max_tokens, |t| nesting.feed(&t));
-    if truncated {
+    let scanned = lex::scan_checked(src, limits.max_tokens, |t| nesting.feed(&t));
+    if scanned.lookahead_exhausted {
+        // Whether those slashes are regexes or division is unknown, so fail closed rather than
+        // admit a source whose nesting the guard could not judge.
+        return Err("the ambiguous `yield /…/` lookahead ran out before the end of a line".into());
+    }
+    if scanned.truncated {
         return Err(format!("more than {} tokens", limits.max_tokens));
     }
     let depth = nesting.max;

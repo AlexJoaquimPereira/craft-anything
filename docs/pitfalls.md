@@ -652,8 +652,9 @@ the block belonged to, and a regex after `yield` needs its brackets and prefix-o
 too, since the same text is division in sloppy code. Sources that estimated one or two levels then
 overflowed the parser thread's stack and aborted the process. Count the `else` links at their own
 scope, read a `yield /…/` as both a regex (for the fallback's facts) and possible code (for the
-guard) with lookahead bounded across the source, and test that a deep source reaches the lexer
-fallback with a nesting reason instead of being parsed.
+guard) with lookahead bounded across the source, ended by every line terminator (an escaped one
+included) and failing closed when its budget runs out, and test that a deep source reaches the
+lexer fallback with a nesting reason instead of being parsed.
 
 **An occurrence label was also a binding name.** The second `obj.x` window and the first
 `obj["x[2]"]` window both appeared as `obj.x[2]`. Reserve literal labels and use a separate

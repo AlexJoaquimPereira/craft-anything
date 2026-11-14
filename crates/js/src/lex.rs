@@ -100,6 +100,15 @@ fn line_terminator_len(src: &str, offset: usize) -> usize {
     }
 }
 
+/// The same for a byte slice: LF, CR, U+2028 or U+2029 at `i`; 0 when there is none.
+fn line_terminator_bytes(bytes: &[u8], i: usize) -> usize {
+    match bytes.get(i) {
+        Some(b'\n' | b'\r') => 1,
+        Some(0xe2) if bytes.get(i + 1) == Some(&0x80) && matches!(bytes.get(i + 2), Some(0xa8 | 0xa9)) => 3,
+        _ => 0,
+    }
+}
+
 /// Tokenize `src`, stopping after `max_tokens` (the flag says whether it stopped early).
 pub fn tokenize(src: &str, max_tokens: usize) -> (Vec<Token<'_>>, bool) {
     let mut out = Vec::new();
@@ -107,9 +116,24 @@ pub fn tokenize(src: &str, max_tokens: usize) -> (Vec<Token<'_>>, bool) {
     (out, truncated)
 }
 
+/// What a scan found besides the tokens.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Scanned {
+    /// `max_tokens` stopped the scan.
+    pub truncated: bool,
+    /// The shared `yield /…/` lookahead budget ran out before a line ended, so whether those
+    /// slashes are regexes or division is unknown; admission fails closed.
+    pub lookahead_exhausted: bool,
+}
+
 /// Stream tokens to `emit` without storing them. Returns true when `max_tokens` stopped it.
-pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)) -> bool {
+pub fn scan<'a>(src: &'a str, max_tokens: usize, emit: impl FnMut(Token<'a>)) -> bool {
+    scan_checked(src, max_tokens, emit).truncated
+}
+
+pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)) -> Scanned {
     let b = src.as_bytes();
+    let mut lookahead_exhausted = false;
     let mut count = 0usize;
     let mut i = 0usize;
     // true = this brace opened a template substitution `${`.
@@ -137,7 +161,7 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
             continue;
         }
         if count >= max_tokens {
-            return true;
+            return Scanned { truncated: true, lookahead_exhausted };
         }
         count += 1;
         let start = i;
@@ -162,6 +186,18 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
         let tok_kind;
         let mut ambiguous_regex = false;
         let slash = if c == b'/' { regex_start(last_sig, last_member) } else { RegexStart::No };
+        let ambiguous_close = if slash == RegexStart::Ambiguous {
+            match regex_closes(b, i + 1, &mut lookahead_left) {
+                RegexCloses::Closes => true,
+                RegexCloses::No => false,
+                RegexCloses::Exhausted => {
+                    lookahead_exhausted = true;
+                    false
+                }
+            }
+        } else {
+            false
+        };
         if c == b'"' || c == b'\'' {
             i += 1;
             while let Some(&d) = b.get(i) {
@@ -214,18 +250,27 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
                 }
             }
             tok_kind = TokKind::Number;
-        } else if slash != RegexStart::No && (slash == RegexStart::Yes || regex_closes(b, i + 1, &mut lookahead_left)) {
+        } else if slash != RegexStart::No && (slash == RegexStart::Yes || ambiguous_close) {
             ambiguous_regex = slash == RegexStart::Ambiguous;
             i += 1;
             let mut in_class = false;
             while let Some(&d) = b.get(i) {
+                let term = line_terminator_bytes(b, i);
+                if term != 0 {
+                    i += term;
+                    break;
+                }
                 i += 1;
                 match d {
-                    b'\\' => i += 1,
+                    b'\\' => {
+                        if line_terminator_bytes(b, i) != 0 {
+                            break;
+                        }
+                        i += 1;
+                    }
                     b'[' => in_class = true,
                     b']' => in_class = false,
                     b'/' if !in_class => break,
-                    b'\n' => break,
                     _ => {}
                 }
             }
@@ -255,7 +300,7 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
         last_sig = Some((tok_kind, text));
         emit(Token { kind: tok_kind, text, offset: start, ambiguous_regex });
     }
-    false
+    Scanned { truncated: false, lookahead_exhausted }
 }
 
 /// Whether a `/` starts a regex, divides, or is the ambiguous `yield /…`.
@@ -283,51 +328,53 @@ fn regex_start(prev: Option<(TokKind, &str)>, after_member: bool) -> RegexStart 
     }
 }
 
+/// What a `yield /…/` lookahead found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegexCloses {
+    /// A closing `/` on the same line.
+    Closes,
+    /// A line ended first: the slash divides.
+    No,
+    /// The shared lookahead budget ran out before the line did: unknown, so admission fails closed.
+    Exhausted,
+}
+
 /// Whether a `/`, starting at `from`, closes a regex on the same line. Escapes and `[…]` classes
-/// are respected, as in the scanner above; a line end first means it is division. `budget` is the
-/// bytes this scan may still look at across the whole source, which keeps repeated lookahead on
-/// hostile `yield /[…` input linear; when it runs out the slash is read as division.
-fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> bool {
+/// are respected, as in the scanner above, and every JavaScript line terminator ends the search
+/// (even after a backslash). `budget` is the bytes this scan may still look at across the whole
+/// source, which keeps repeated lookahead on hostile `yield /[…` input linear.
+fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> RegexCloses {
     let mut in_class = false;
     while let Some(&d) = bytes.get(i) {
+        if line_terminator_bytes(bytes, i) != 0 {
+            return RegexCloses::No;
+        }
         if *budget == 0 {
-            return false;
+            return RegexCloses::Exhausted;
         }
         *budget -= 1;
         i += 1;
         match d {
-            b'\\' => i += 1,
+            b'\\' => {
+                if line_terminator_bytes(bytes, i) != 0 {
+                    return RegexCloses::No;
+                }
+                i += 1;
+            }
             b'[' => in_class = true,
             b']' => in_class = false,
-            b'/' if !in_class => return true,
-            b'\n' => return false,
+            b'/' if !in_class => return RegexCloses::Closes,
             _ => {}
         }
     }
-    false
+    RegexCloses::No
 }
 
 /// How much nesting the text of an ambiguous `yield /…/` may hold if it is sloppy-code division:
-/// its brackets and the longest run of prefix `!`/`+`/`-`/`~`. Counting a real regex's characters
-/// too over-estimates, which only sends the source to the lexer fallback.
+/// its brackets and every `!`, `+`, `-`, `~`, `*` or `%`, which chain one node each. Counting a
+/// real regex's characters too over-estimates, which only sends the source to the lexer fallback.
 fn ambiguous_depth(text: &str) -> usize {
-    let mut brackets = 0usize;
-    let mut run = 0usize;
-    let mut longest = 0usize;
-    for b in text.bytes() {
-        match b {
-            b'(' | b'[' | b'{' => {
-                brackets += 1;
-                run = 0;
-            }
-            b'!' | b'+' | b'-' | b'~' => {
-                run += 1;
-                longest = longest.max(run);
-            }
-            _ => run = 0,
-        }
-    }
-    brackets.saturating_add(longest)
+    text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%')).count()
 }
 
 /// Decode the value of a string token (quotes stripped, common escapes resolved).
@@ -723,14 +770,34 @@ mod tests {
         assert!(deep(yield_regex) > n, "brackets in a regex after yield");
         let yield_nots = format!("x = yield /{}a / 1;", "!".repeat(n));
         assert!(deep(yield_nots) > n, "prefix operators in an ambiguous regex after yield");
+        let adds = format!("x = yield /{}a / 1;", "a+".repeat(n));
+        assert!(deep(adds) > n, "addition chain in an ambiguous regex after yield");
+        let separated = format!("x = yield /{}a / 1;", "!a".repeat(n));
+        assert!(deep(separated) > n, "separated prefix operators in an ambiguous regex after yield");
     }
 
     #[test]
     fn ambiguous_regex_lookahead_stops_at_its_budget() {
         let bytes = b"/[[[[[[";
         let mut budget = 4;
-        assert!(!regex_closes(bytes, 1, &mut budget));
+        assert_eq!(regex_closes(bytes, 1, &mut budget), RegexCloses::Exhausted);
         assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn ambiguous_regex_stops_at_every_line_terminator() {
+        for term in ["\n", "\r", "\u{2028}", "\u{2029}"] {
+            let src = format!("yield / 2;{term} x = {}a; /re/;", "!".repeat(6_000));
+            let toks = tokenize(&src, 100_000).0;
+            let nots = toks.iter().filter(|t| t.kind == TokKind::Punct && t.text == "!").count();
+            assert_eq!(nots, 6_000, "line terminator {term:?}");
+            assert!(nesting_estimate(&toks) >= 6_000, "line terminator {term:?}");
+        }
+        // A backslash before the line end does not let the lookahead continue either.
+        let escaped = format!("yield / 2;\\\n x = {}a; /re/;", "!".repeat(6_000));
+        let toks = tokenize(&escaped, 100_000).0;
+        assert_eq!(toks.iter().filter(|t| t.kind == TokKind::Punct && t.text == "!").count(), 6_000);
+        assert!(nesting_estimate(&toks) >= 6_000);
     }
 
     #[test]
@@ -750,6 +817,10 @@ mod tests {
         // `yield* /re/` too, and `return /re/` as before.
         assert!(tokenize("yield* /re/g", 100).0.iter().any(|t| t.kind == TokKind::Regex));
         assert!(tokenize("return /a[0]/g", 100).0.iter().any(|t| t.kind == TokKind::Regex));
+        // A compact generator regex stays a shallow regex, not a refused source.
+        let boundary = tokenize("yield /a+b/;", 100).0;
+        assert!(boundary.iter().any(|t| t.kind == TokKind::Regex));
+        assert!(nesting_estimate(&boundary) < 16);
         // `yield / 2` with no closing `/` on the line is sloppy-code division: no regex is made,
         // and the brackets after it stay visible to the nesting estimate.
         let division = tokenize("yield / 2; g(h(k(i)));", 100).0;

@@ -218,11 +218,27 @@ fn deep_and_broken_sources_fall_back() {
         ("block and unbraced else-if consequents", "if(a){b;}else if(a)c;else ".repeat(n) + "if(a){d;}"),
         ("brackets in a regex after yield", format!("x = yield /{} /;", "[".repeat(n) + &"]".repeat(n))),
         ("prefix operators in a regex after yield", format!("x = yield /{}a / 1;", "!".repeat(n))),
+        ("addition chain in a regex after yield", format!("x = yield /{}a / 1;", "a+".repeat(n))),
+        ("separated prefix operators in a regex after yield", format!("x = yield /{}a / 1;", "!a".repeat(n))),
     ] {
         let f = run("deep.js", &src).facts;
         assert_eq!(f.mode, ParseMode::Lexer, "{what}");
         assert!(f.mode_reason.as_deref().unwrap_or("").contains("nests"), "{what}: {:?}", f.mode_reason);
     }
+}
+
+/// Exhausted ambiguous-regex lookahead fails closed instead of guessing division, and the
+/// configured (wasm-size) nesting limit still applies to sources the lookahead can judge.
+#[test]
+fn exhausted_yield_lookahead_fails_closed() {
+    let hostile = "yield /[".repeat(50);
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    assert!(admit(&hostile, &limits).is_err(), "admit fails closed when the lookahead budget runs out");
+    let f = analyze("h.js", &hostile, &limits).facts;
+    assert_eq!(f.mode, ParseMode::Lexer, "{:?}", f.mode_reason);
+    let deep = format!("x = {}1{};", "(".repeat(200), ")".repeat(200));
+    assert!(admit(&deep, &limits).is_err(), "the 160-level limit still refuses a deep source");
+    assert!(admit("yield /a[0]/g;", &limits).is_ok(), "a compact regex after yield is still admitted");
 }
 
 #[test]
