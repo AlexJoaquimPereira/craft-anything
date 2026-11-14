@@ -319,10 +319,12 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
         last_member = tok_kind == TokKind::Ident && matches!(last_sig, Some((TokKind::Punct, "." | "?.")));
         last_sig = Some((tok_kind, text));
         emit(Token { kind: tok_kind, text, offset: start, ambiguous_regex });
-        if ambiguous_regex && text.bytes().any(|b| matches!(b, b'\'' | b'"' | b'`')) {
-            // In sloppy code a quote here starts a string whose end the regex reading may pass, so
-            // the two token streams no longer line up.
-            ambiguous_boundaries = true;
+        if ambiguous_regex {
+            // In sloppy code a quote here starts a string whose end the regex reading may pass, and
+            // an unbalanced bracket leaves the two readings with different bracket scopes.
+            if text.bytes().any(|b| matches!(b, b'\'' | b'"' | b'`')) || !brackets_balance(text) {
+                ambiguous_boundaries = true;
+            }
         }
         after_ambiguous_regex = ambiguous_regex;
     }
@@ -402,6 +404,23 @@ fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> RegexCloses {
 /// lexer fallback.
 fn ambiguous_depth(text: &str) -> usize {
     text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%' | b'?' | b'&' | b'|' | b'^')).count()
+}
+
+/// Whether the brackets in `text` balance. An ambiguous token whose division reading leaves a
+/// bracket open, or closes one it never opened, no longer shares the scanner's bracket scopes.
+fn brackets_balance(text: &str) -> bool {
+    let mut depth = 0usize;
+    for b in text.bytes() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return false,
+            },
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// Decode the value of a string token (quotes stripped, common escapes resolved).

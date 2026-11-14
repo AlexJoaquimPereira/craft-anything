@@ -119,7 +119,7 @@ pub fn admit(src: &str, limits: &Limits) -> Result<(), String> {
     if scanned.ambiguous_boundaries {
         // The regex and division readings disagree on where a token or string ends (a quote inside
         // it, or a slash/update operator after it), so fail closed rather than accept a shallow one.
-        return Err("a `yield /…/` read as a regex hides division token boundaries (a quote inside it, or a comment, slash or update operator after it)".into());
+        return Err("a `yield /…/` read as a regex hides division token boundaries (a quote or unbalanced bracket inside it, or a comment, slash or update operator after it)".into());
     }
     if scanned.truncated {
         return Err(format!("more than {} tokens", limits.max_tokens));

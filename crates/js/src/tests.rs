@@ -301,6 +301,24 @@ fn ambiguous_regex_depth_carries_into_following_expression() {
     assert!(admit(&src, &limits).is_err(), "100 operators plus 100 brackets should exceed 160");
 }
 
+/// An unbalanced bracket inside the ambiguous token leaves the two readings with different
+/// bracket scopes, so admission fails closed.
+#[test]
+fn ambiguous_regex_with_unbalanced_brackets_fails_closed() {
+    let src = "x = yield /a(/ 1;";
+    assert!(admit(src, &Limits::default()).is_err());
+    assert_eq!(analyze("u.js", src, &Limits::default()).facts.mode, ParseMode::Lexer);
+}
+
+/// Balanced brackets inside the ambiguous token keep their depth, so 100 of them plus 100
+/// following brackets exceed the 160-level limit.
+#[test]
+fn ambiguous_regex_balanced_brackets_count_toward_the_limit() {
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    let src = format!("x = yield /{}/ {}1{};", "(".repeat(100) + &")".repeat(100), "(".repeat(100), ")".repeat(100));
+    assert!(admit(&src, &limits).is_err(), "balanced brackets plus following nesting should exceed 160");
+}
+
 #[test]
 fn junk_never_panics() {
     let samples = [
