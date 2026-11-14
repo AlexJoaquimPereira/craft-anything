@@ -1906,6 +1906,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-bundle-numeric-identities
 - [x] Allocate distinct recovered module paths after repeated content-hash collisions.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-js-module-collisions
+- [x] Bound the text JavaScript facts build from constant strings, so repeated concatenation of a constant with itself cannot grow without limit.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-constant-text-budget
 - [x] Refuse oversized GNU tar long names and link targets instead of silently truncating member identities.
       — claimed: Afloat16, branch bugfix/r3.12-tar-long-identities-20261109
       Source [`de2c6390`](https://github.com/Afloat16/craft-anything/commit/de2c63908909cab675887103921ed2601b1bae9b) passed [formats tests, fmt and clippy](https://github.com/Afloat16/claude-mem/actions/runs/42640688213/job/129240669663)
@@ -2179,6 +2181,11 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-macho-zerofill-section-data
 - [x] Keep native address translations and reads inside both the mapped range and its file-backed bytes.
       — claimed: Afloat16, branch bugfix/r3.12-binary-padding
+- [x] `native_strings_find` lists at most 32 references per string without a count or flag, though
+      its search is described as complete; add the reference count (complete within the analysis
+      unless its xref limit was reached), a capped flag, the analysis xref-limit limitation and a
+      display-cap limitation, as `native_strings_browse` already reports a count.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-string-reference-count
 - [x] List each Objective-C class and category address once when ordinary and non-lazy registration tables overlap, keeping distinct same-named definitions separate.
       — claimed: Afloat16, branch bugfix/r3.12-objc-nonlazy-identity-20261111
 - [x] Require complete Objective-C method record strides before reading absolute or relative method fields.
@@ -2312,6 +2319,9 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-plist-xml-line-endings-1111
 - [x] End JavaScript line comments at every language line terminator, preserving following tokens for the nesting admission guard and lexer fallback.
       — claimed: Afloat16, branch bugfix/r3.12-js-line-comment-boundaries
+- [x] Count call, index and tagged-template chains and consecutive labels in the JavaScript nesting estimate, so sources nested deeper than the parser's stack go to the lexer fallback instead of overflowing it.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-postfix-chain-nesting
+- [ ] The JavaScript nesting estimate still misses shapes that overflow the parser's stack with two million links: `if(a);else if(a);else …` (the `;` resets the count between links), `class extends class extends …`, a run of prefix `++`, and brackets the tokenizer hides inside a false regex after `a++ /`, `x.of /` or `yield /`. Count each, with a regression test that analyses the deep source.
 - [x] Read and edit JSONC registrations whose line comments end at a bare carriage return.
       — claimed: Afloat16, branch bugfix/r3.12-jsonc-carriage-return-comments
 - [x] Name code-directory flags with the bits Apple uses: hard 0x100, kill 0x200, expires 0x400,
