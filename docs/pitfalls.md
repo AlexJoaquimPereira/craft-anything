@@ -654,8 +654,10 @@ overflowed the parser thread's stack and aborted the process. Count the `else` l
 scope, read a `yield /…/` as both a regex (for the fallback's facts) and possible code (for the
 guard) with lookahead bounded across the source, ended by every line terminator (an escaped one
 included), failing closed when its budget runs out, when a quote or backtick inside it starts a
-string in sloppy code, or when the next token would differ between the regex and division readings,
-and test that a deep source reaches the lexer fallback with a nesting reason instead of being parsed.
+string in sloppy code, when its closing slash would open a comment or a later token would differ
+between the regex and division readings, and keeping the division reading's operator depth in the
+expression so later nesting adds to it; test that a deep source reaches the lexer fallback with a
+nesting reason instead of being parsed.
 
 **An occurrence label was also a binding name.** The second `obj.x` window and the first
 `obj["x[2]"]` window both appeared as `obj.x[2]`. Reserve literal labels and use a separate

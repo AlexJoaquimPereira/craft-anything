@@ -283,7 +283,14 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
                     }
                     b'[' => in_class = true,
                     b']' => in_class = false,
-                    b'/' if !in_class => break,
+                    b'/' if !in_class => {
+                        // In sloppy code this closing `/` divides, and a `*` or `/` right after it
+                        // opens a comment the regex reading passes.
+                        if ambiguous_regex && matches!(b.get(i), Some(b'*' | b'/')) {
+                            ambiguous_boundaries = true;
+                        }
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -390,10 +397,11 @@ fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> RegexCloses {
 }
 
 /// How much nesting the text of an ambiguous `yield /…/` may hold if it is sloppy-code division:
-/// its brackets and every `!`, `+`, `-`, `~`, `*`, `%` or `?`, which chain one node each. Counting
-/// a real regex's characters too over-estimates, which only sends the source to the lexer fallback.
+/// its brackets and every `!`, `+`, `-`, `~`, `*`, `%`, `?`, `&`, `|` or `^`, which chain one node
+/// each. Counting a real regex's characters too over-estimates, which only sends the source to the
+/// lexer fallback.
 fn ambiguous_depth(text: &str) -> usize {
-    text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%' | b'?')).count()
+    text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%' | b'?' | b'&' | b'|' | b'^')).count()
 }
 
 /// Decode the value of a string token (quotes stripped, common escapes resolved).
@@ -574,7 +582,12 @@ impl Nesting {
         }
         if t.ambiguous_regex {
             let inner = ambiguous_depth(t.text);
-            *max = (*max).max(sum.saturating_add(*chain_total).saturating_add(inner));
+            // The division reading's depth is part of this expression, so later nesting adds to
+            // it; the comma, `;` and closing-bracket handling above clear it like any other depth.
+            if let Some(n) = stack.last_mut() {
+                *n = n.saturating_add(inner);
+            }
+            *sum = sum.saturating_add(inner);
         }
         // `((f)())()`, `f(g(x)())()`, `(a + b) + c`: what follows a closed bracket wraps the
         // expression it ended, so that expression's depth goes on counting at this level. Siblings
@@ -795,6 +808,10 @@ mod tests {
         assert!(deep(separated) > n, "separated prefix operators in an ambiguous regex after yield");
         let cond = format!("x = yield /{}a / 1;", "a?b:".repeat(n));
         assert!(deep(cond) > n, "conditional chain in an ambiguous regex after yield");
+        for op in ["&", "|", "^"] {
+            let bitwise = format!("x = yield /{}a / 1;", format!("a{op}").repeat(n));
+            assert!(deep(bitwise) > n, "bitwise {op} chain in an ambiguous regex after yield");
+        }
     }
 
     #[test]

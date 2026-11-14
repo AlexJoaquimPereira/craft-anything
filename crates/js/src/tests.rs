@@ -273,6 +273,34 @@ fn ambiguous_regex_conditional_chain_is_counted() {
     assert!(admit("yield /a[0]/g;", &limits).is_ok(), "the compact regex control");
 }
 
+/// Bitwise chains in the division reading count one level per operator at the configured limit.
+#[test]
+fn ambiguous_regex_bitwise_chains_are_counted() {
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    for op in ['&', '|', '^'] {
+        let src = format!("x = yield /{}a / 1;", format!("a{op}").repeat(200));
+        assert!(admit(&src, &limits).is_err(), "bitwise {op}");
+    }
+    assert!(admit("yield /a[0]/g;", &limits).is_ok(), "the compact regex control");
+}
+
+/// A closing slash immediately followed by `*` opens a block comment in sloppy code while the
+/// regex reading passes it, so admission fails closed; the balanced case is the regression.
+#[test]
+fn ambiguous_regex_before_a_block_comment_fails_closed() {
+    let src = "yield /a/*b*/;";
+    assert!(admit(src, &Limits::default()).is_err());
+    assert_eq!(analyze("c.js", src, &Limits::default()).facts.mode, ParseMode::Lexer);
+}
+
+/// The division reading's depth stays in the expression, so following brackets add to it.
+#[test]
+fn ambiguous_regex_depth_carries_into_following_expression() {
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    let src = format!("x = yield /{}a / {}1{};", "a+".repeat(100), "(".repeat(100), ")".repeat(100));
+    assert!(admit(&src, &limits).is_err(), "100 operators plus 100 brackets should exceed 160");
+}
+
 #[test]
 fn junk_never_panics() {
     let samples = [
