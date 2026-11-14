@@ -215,7 +215,9 @@ fn deep_and_broken_sources_fall_back() {
         ("prefix ++ run", format!("x = {}a;", "++".repeat(n))),
         ("brackets after an update operator", format!("x = a++ /{} / 1;", "[".repeat(n) + &"]".repeat(n))),
         ("else-if chain with comma expressions", "if(a)b,c;else ".repeat(n) + "if(a)b,c;"),
+        ("block and unbraced else-if consequents", "if(a){b;}else if(a)c;else ".repeat(n) + "if(a){d;}"),
         ("brackets in a regex after yield", format!("x = yield /{} /;", "[".repeat(n) + &"]".repeat(n))),
+        ("prefix operators in a regex after yield", format!("x = yield /{}a / 1;", "!".repeat(n))),
     ] {
         let f = run("deep.js", &src).facts;
         assert_eq!(f.mode, ParseMode::Lexer, "{what}");

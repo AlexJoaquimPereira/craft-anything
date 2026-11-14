@@ -118,6 +118,8 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
     let mut last_sig: Option<(TokKind, &str)> = None;
     // Whether the last token was a name after `.`/`?.`: `x.of /` divides, it does not start a regex.
     let mut last_member = false;
+    // Bytes left for `yield /…/` lookahead across this source; keeps hostile input linear.
+    let mut lookahead_left = b.len();
     while i < b.len() {
         let c = b.get(i).copied().unwrap_or(0);
         if c.is_ascii_whitespace() {
@@ -212,7 +214,7 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)
                 }
             }
             tok_kind = TokKind::Number;
-        } else if slash != RegexStart::No && (slash == RegexStart::Yes || regex_closes(b, i + 1)) {
+        } else if slash != RegexStart::No && (slash == RegexStart::Yes || regex_closes(b, i + 1, &mut lookahead_left)) {
             ambiguous_regex = slash == RegexStart::Ambiguous;
             i += 1;
             let mut in_class = false;
@@ -282,10 +284,16 @@ fn regex_start(prev: Option<(TokKind, &str)>, after_member: bool) -> RegexStart 
 }
 
 /// Whether a `/`, starting at `from`, closes a regex on the same line. Escapes and `[…]` classes
-/// are respected, as in the scanner above; a line end first means it is division.
-fn regex_closes(bytes: &[u8], mut i: usize) -> bool {
+/// are respected, as in the scanner above; a line end first means it is division. `budget` is the
+/// bytes this scan may still look at across the whole source, which keeps repeated lookahead on
+/// hostile `yield /[…` input linear; when it runs out the slash is read as division.
+fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> bool {
     let mut in_class = false;
     while let Some(&d) = bytes.get(i) {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
         i += 1;
         match d {
             b'\\' => i += 1,
@@ -297,6 +305,29 @@ fn regex_closes(bytes: &[u8], mut i: usize) -> bool {
         }
     }
     false
+}
+
+/// How much nesting the text of an ambiguous `yield /…/` may hold if it is sloppy-code division:
+/// its brackets and the longest run of prefix `!`/`+`/`-`/`~`. Counting a real regex's characters
+/// too over-estimates, which only sends the source to the lexer fallback.
+fn ambiguous_depth(text: &str) -> usize {
+    let mut brackets = 0usize;
+    let mut run = 0usize;
+    let mut longest = 0usize;
+    for b in text.bytes() {
+        match b {
+            b'(' | b'[' | b'{' => {
+                brackets += 1;
+                run = 0;
+            }
+            b'!' | b'+' | b'-' | b'~' => {
+                run += 1;
+                longest = longest.max(run);
+            }
+            _ => run = 0,
+        }
+    }
+    brackets.saturating_add(longest)
 }
 
 /// Decode the value of a string token (quotes stripped, common escapes resolved).
@@ -410,18 +441,21 @@ fn continues_after_close(t: &Token<'_>) -> bool {
 /// Streaming state for [`nesting_estimate`].
 #[derive(Debug)]
 pub struct Nesting {
-    /// What each open bracket has counted so far.
+    /// What each open bracket has counted so far, one per level.
     stack: Vec<usize>,
+    /// The `else` links counted at each level: a block's links end with its `}`.
+    chains: Vec<usize>,
+    /// Whether the last token ended a statement at that level (`;` or `}`).
+    ended: Vec<bool>,
+    /// The expression depth at every level together.
     sum: usize,
+    /// The `else` links at every level together. Kept apart from the expression level, which a
+    /// comma clears: `if (a) b, c; else …` still nests one level per link.
+    chain_total: usize,
     pub max: usize,
     recent: Recent,
     /// What a bracket that just closed had counted, for the expression it may go on in.
     carry: usize,
-    /// Whether the last token ended a statement (`;` or `}`), so an `else` next continues a chain.
-    ended: bool,
-    /// The `else` links counted in the current chain. Kept apart from the expression level, which
-    /// a comma clears: `if (a) b, c; else …` still nests one level per link.
-    else_chain: usize,
     /// Whether the last token can end an expression, so `++`/`--` after it is postfix.
     prev_value: bool,
     /// Whether the last token was `++`/`--`; a following one is prefix, never postfix.
@@ -434,12 +468,13 @@ impl Default for Nesting {
     fn default() -> Self {
         Nesting {
             stack: vec![0],
+            chains: vec![0],
+            ended: vec![false],
             sum: 0,
+            chain_total: 0,
             max: 0,
             recent: Recent::Other,
             carry: 0,
-            ended: false,
-            else_chain: 0,
             prev_value: false,
             prev_update: false,
             prev_extends: false,
@@ -453,20 +488,27 @@ impl Nesting {
         if t.kind == TokKind::Comment {
             return;
         }
-        let Nesting { stack, sum, max, recent, carry, ended, else_chain, prev_value, prev_update, prev_extends } = self;
+        let Nesting { stack, chains, ended, sum, chain_total, max, recent, carry, prev_value, prev_update, prev_extends } = self;
         // `if (a); else if (a); else …`: each link ends with `;`, but the next link nests inside
-        // it. Count the links apart from the expression level, which a comma in the consequent
-        // clears; any other token after a statement end closes the chain.
-        if std::mem::take(ended) {
+        // it. Count the links at their own level, apart from the expression level (which a comma
+        // clears), so a `;` inside a block does not reset the chain that block is the consequent
+        // of. Any other token after a statement end closes that level's chain.
+        let level = stack.len().saturating_sub(1);
+        if let Some(flag) = ended.get_mut(level)
+            && std::mem::take(flag)
+            && let Some(links) = chains.get_mut(level)
+        {
             if t.kind == TokKind::Ident && t.text == "else" {
-                *else_chain += 1;
+                *links += 1;
+                *chain_total += 1;
             } else {
-                *else_chain = 0;
+                *chain_total = chain_total.saturating_sub(*links);
+                *links = 0;
             }
         }
         if t.ambiguous_regex {
-            let inner = t.text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{')).count();
-            *max = (*max).max(sum.saturating_add(inner));
+            let inner = ambiguous_depth(t.text);
+            *max = (*max).max(sum.saturating_add(*chain_total).saturating_add(inner));
         }
         // `((f)())()`, `f(g(x)())()`, `(a + b) + c`: what follows a closed bracket wraps the
         // expression it ended, so that expression's depth goes on counting at this level. Siblings
@@ -517,12 +559,21 @@ impl Nesting {
         {
             *sum = sum.saturating_sub(n + 1);
             *carry = n;
-            if t.kind == TokKind::Punct && t.text == "}" {
-                *ended = true;
+            if let Some(links) = chains.pop() {
+                *chain_total = chain_total.saturating_sub(links);
+            }
+            ended.pop();
+            if t.kind == TokKind::Punct
+                && t.text == "}"
+                && let Some(flag) = ended.last_mut()
+            {
+                *flag = true;
             }
         }
         if opens {
             stack.push(0);
+            chains.push(0);
+            ended.push(false);
             *sum += 1;
         }
         if !opens && !closes {
@@ -541,8 +592,10 @@ impl Nesting {
                 if matches!((t.kind, t.text), (TokKind::Punct, "," | ";")) {
                     *sum = sum.saturating_sub(*n);
                     *n = 0;
-                    if t.text == ";" {
-                        *ended = true;
+                    if t.text == ";"
+                        && let Some(flag) = ended.last_mut()
+                    {
+                        *flag = true;
                     }
                 } else if nests {
                     *n += 1;
@@ -550,7 +603,7 @@ impl Nesting {
                 }
             }
         }
-        *max = (*max).max(sum.saturating_add(*else_chain));
+        *max = (*max).max(sum.saturating_add(*chain_total));
         // What the next token sees: `a++` is postfix, `++a` and `++++a` are prefix.
         *prev_value = match t.kind {
             TokKind::Number | TokKind::Str | TokKind::Regex => true,
@@ -664,8 +717,20 @@ mod tests {
         assert!(deep(hidden) > n, "brackets after an update operator");
         let commas = "if(a)b,c;else ".repeat(n) + "if(a)b,c;";
         assert!(deep(commas) > n, "else-if chain with comma expressions");
+        let alternating = "if(a){b;}else if(a)c;else ".repeat(n) + "if(a){d;}";
+        assert!(deep(alternating) > n, "block and unbraced consequents");
         let yield_regex = format!("x = yield /{} /;", "[".repeat(n) + &"]".repeat(n));
         assert!(deep(yield_regex) > n, "brackets in a regex after yield");
+        let yield_nots = format!("x = yield /{}a / 1;", "!".repeat(n));
+        assert!(deep(yield_nots) > n, "prefix operators in an ambiguous regex after yield");
+    }
+
+    #[test]
+    fn ambiguous_regex_lookahead_stops_at_its_budget() {
+        let bytes = b"/[[[[[[";
+        let mut budget = 4;
+        assert!(!regex_closes(bytes, 1, &mut budget));
+        assert_eq!(budget, 0);
     }
 
     #[test]
