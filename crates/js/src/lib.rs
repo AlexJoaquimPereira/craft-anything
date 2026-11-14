@@ -116,10 +116,10 @@ pub fn admit(src: &str, limits: &Limits) -> Result<(), String> {
         // admit a source whose nesting the guard could not judge.
         return Err("the ambiguous `yield /…/` lookahead ran out before the end of a line".into());
     }
-    if scanned.ambiguous_follow {
-        // The regex and division readings disagree on the token after it, so the estimate cannot
-        // follow both; fail closed rather than accept a shallow one.
-        return Err("a `yield /…/` read as a regex is followed by a slash or update operator that divides in sloppy code".into());
+    if scanned.ambiguous_boundaries {
+        // The regex and division readings disagree on where a token or string ends (a quote inside
+        // it, or a slash/update operator after it), so fail closed rather than accept a shallow one.
+        return Err("a `yield /…/` read as a regex hides division token boundaries (a quote inside it, or a slash or update operator after it)".into());
     }
     if scanned.truncated {
         return Err(format!("more than {} tokens", limits.max_tokens));

@@ -220,6 +220,7 @@ fn deep_and_broken_sources_fall_back() {
         ("prefix operators in a regex after yield", format!("x = yield /{}a / 1;", "!".repeat(n))),
         ("addition chain in a regex after yield", format!("x = yield /{}a / 1;", "a+".repeat(n))),
         ("separated prefix operators in a regex after yield", format!("x = yield /{}a / 1;", "!a".repeat(n))),
+        ("conditional chain in a regex after yield", format!("x = yield /{}a / 1;", "a?b:".repeat(n))),
     ] {
         let f = run("deep.js", &src).facts;
         assert_eq!(f.mode, ParseMode::Lexer, "{what}");
@@ -250,6 +251,25 @@ fn ambiguous_regex_with_a_diverging_follow_fails_closed() {
         assert!(admit(src, &limits).is_err(), "{src}");
         assert_eq!(analyze("d.js", src, &limits).facts.mode, ParseMode::Lexer, "{src}");
     }
+    assert!(admit("yield /a[0]/g;", &limits).is_ok(), "the compact regex control");
+}
+
+/// A quote inside the ambiguous token starts a string in the division reading, where deeply
+/// nested code follows; the regex reading hides it, so admission fails closed.
+#[test]
+fn ambiguous_regex_with_a_quote_hides_division_boundaries() {
+    let quoted = format!("yield /\"a/b\"/ {};", "(".repeat(6_000));
+    assert!(admit(&quoted, &Limits::default()).is_err(), "a quote inside the ambiguous token");
+    assert_eq!(analyze("q.js", &quoted, &Limits::default()).facts.mode, ParseMode::Lexer);
+}
+
+/// A conditional chain in the division reading counts one level per `?`, so the wasm-size limit
+/// refuses it; the compact generator regex stays admitted.
+#[test]
+fn ambiguous_regex_conditional_chain_is_counted() {
+    let limits = Limits { max_nesting: 160, ..Limits::default() };
+    let cond = format!("x = yield /{}a / 1;", "a?b:".repeat(200));
+    assert!(admit(&cond, &limits).is_err(), "a conditional chain in an ambiguous regex");
     assert!(admit("yield /a[0]/g;", &limits).is_ok(), "the compact regex control");
 }
 

@@ -124,9 +124,9 @@ pub(crate) struct Scanned {
     /// The shared `yield /…/` lookahead budget ran out before a line ended, so whether those
     /// slashes are regexes or division is unknown; admission fails closed.
     pub lookahead_exhausted: bool,
-    /// A `yield /…/` read as a regex is followed by `/`, `++` or `--`, which the division reading
-    /// would tokenize differently; admission fails closed.
-    pub ambiguous_follow: bool,
+    /// A `yield /…/` read as a regex hides division token boundaries: a quote or backtick inside
+    /// it, or a following `/`, `++` or `--`; admission fails closed.
+    pub ambiguous_boundaries: bool,
 }
 
 /// Stream tokens to `emit` without storing them. Returns true when `max_tokens` stopped it.
@@ -137,7 +137,7 @@ pub fn scan<'a>(src: &'a str, max_tokens: usize, emit: impl FnMut(Token<'a>)) ->
 pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl FnMut(Token<'a>)) -> Scanned {
     let b = src.as_bytes();
     let mut lookahead_exhausted = false;
-    let mut ambiguous_follow = false;
+    let mut ambiguous_boundaries = false;
     // Set after a `yield /…/` read as a regex: the division reading ends in a `/` token instead,
     // so the next `/`, `++` or `--` would be classified differently.
     let mut after_ambiguous_regex = false;
@@ -168,7 +168,7 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
             continue;
         }
         if count >= max_tokens {
-            return Scanned { truncated: true, lookahead_exhausted, ambiguous_follow };
+            return Scanned { truncated: true, lookahead_exhausted, ambiguous_boundaries };
         }
         count += 1;
         let start = i;
@@ -194,7 +194,7 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
             // Comments above keep the flag: the next real token decides. The flag is replaced by
             // this token's own state at the end of the iteration.
             let diverges = (c == b'/' && next != b'/' && next != b'*') || ((c == b'+' || c == b'-') && next == c);
-            ambiguous_follow |= diverges;
+            ambiguous_boundaries |= diverges;
         }
         let tok_kind;
         let mut ambiguous_regex = false;
@@ -312,9 +312,14 @@ pub(crate) fn scan_checked<'a>(src: &'a str, max_tokens: usize, mut emit: impl F
         last_member = tok_kind == TokKind::Ident && matches!(last_sig, Some((TokKind::Punct, "." | "?.")));
         last_sig = Some((tok_kind, text));
         emit(Token { kind: tok_kind, text, offset: start, ambiguous_regex });
+        if ambiguous_regex && text.bytes().any(|b| matches!(b, b'\'' | b'"' | b'`')) {
+            // In sloppy code a quote here starts a string whose end the regex reading may pass, so
+            // the two token streams no longer line up.
+            ambiguous_boundaries = true;
+        }
         after_ambiguous_regex = ambiguous_regex;
     }
-    Scanned { truncated: false, lookahead_exhausted, ambiguous_follow }
+    Scanned { truncated: false, lookahead_exhausted, ambiguous_boundaries }
 }
 
 /// Whether a `/` starts a regex, divides, or is the ambiguous `yield /…`.
@@ -385,10 +390,10 @@ fn regex_closes(bytes: &[u8], mut i: usize, budget: &mut usize) -> RegexCloses {
 }
 
 /// How much nesting the text of an ambiguous `yield /…/` may hold if it is sloppy-code division:
-/// its brackets and every `!`, `+`, `-`, `~`, `*` or `%`, which chain one node each. Counting a
-/// real regex's characters too over-estimates, which only sends the source to the lexer fallback.
+/// its brackets and every `!`, `+`, `-`, `~`, `*`, `%` or `?`, which chain one node each. Counting
+/// a real regex's characters too over-estimates, which only sends the source to the lexer fallback.
 fn ambiguous_depth(text: &str) -> usize {
-    text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%')).count()
+    text.bytes().filter(|b| matches!(b, b'(' | b'[' | b'{' | b'!' | b'+' | b'-' | b'~' | b'*' | b'%' | b'?')).count()
 }
 
 /// Decode the value of a string token (quotes stripped, common escapes resolved).
@@ -788,6 +793,8 @@ mod tests {
         assert!(deep(adds) > n, "addition chain in an ambiguous regex after yield");
         let separated = format!("x = yield /{}a / 1;", "!a".repeat(n));
         assert!(deep(separated) > n, "separated prefix operators in an ambiguous regex after yield");
+        let cond = format!("x = yield /{}a / 1;", "a?b:".repeat(n));
+        assert!(deep(cond) > n, "conditional chain in an ambiguous regex after yield");
     }
 
     #[test]
