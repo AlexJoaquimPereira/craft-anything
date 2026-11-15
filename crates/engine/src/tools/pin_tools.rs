@@ -313,22 +313,29 @@ fn project_pin_stop(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
     let mut pin = pins::get(&ws, p.pin)?;
     let mut stopped = runs(ctx).stop(&pin.app_dir(&ws));
     let before = pin.runs.len();
-    pin.runs.retain(|r| {
-        let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
-        if !process_alive(&mark) {
-            return false;
-        }
-        if stop_process(&mark) {
-            stopped += 1;
-            return false;
-        }
-        // Keep a process that is still there, so the next stop can try again.
-        !process_alive(&mark)
-    });
+    stopped += stop_recorded(&mut pin.runs, process_alive, stop_process);
     if pin.runs.len() != before {
         pins::save(&ws, &pin)?;
     }
     Ok(ToolOutput::Value(json!({"pin": pin.id, "stopped": stopped})))
+}
+
+/// Stop the recorded processes that are still ours; how many stopped. A process still there after
+/// a failed stop stays recorded, so the next stop can try again.
+fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut alive: impl FnMut(&ProcessMark) -> bool, mut stop: impl FnMut(&ProcessMark) -> bool) -> usize {
+    let mut stopped = 0;
+    runs.retain(|r| {
+        let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
+        if !alive(&mark) {
+            return false;
+        }
+        if stop(&mark) {
+            stopped += 1;
+            return false;
+        }
+        alive(&mark)
+    });
+    stopped
 }
 
 fn project_pin_rename(_ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
@@ -357,6 +364,20 @@ mod tests {
     use super::*;
     use crate::workspace::TargetRef;
     use crate::{CallOptions, Caller, Consent, Engine};
+
+    #[test]
+    fn a_failed_stop_keeps_a_live_record() {
+        let run = |pid| pins::PinRun { pid, start: "s".into() };
+        let mut runs = vec![run(7)];
+        assert_eq!(stop_recorded(&mut runs, |_| true, |_| false), 0);
+        assert_eq!(runs.len(), 1, "a failed stop keeps the live record");
+        let mut runs = vec![run(8)];
+        assert_eq!(stop_recorded(&mut runs, |_| true, |_| true), 1);
+        assert!(runs.is_empty(), "a stopped process's record is cleared");
+        let mut runs = vec![run(9)];
+        assert_eq!(stop_recorded(&mut runs, |_| false, |_| true), 0);
+        assert!(runs.is_empty(), "a dead record is dropped without a stop");
+    }
 
     #[cfg(unix)]
     #[test]
