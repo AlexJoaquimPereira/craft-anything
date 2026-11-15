@@ -1355,7 +1355,7 @@ fn signal_mark(mark: &ProcessMark, signal: Signal) {
 
 #[cfg(target_os = "linux")]
 fn group_survivors(leader: &ProcessMark, targets: &[ProcessMark]) -> Vec<ProcessMark> {
-    let mut out: Vec<ProcessMark> = process_group_members(leader).into_iter().filter(|m| process_alive(m)).collect();
+    let mut out: Vec<ProcessMark> = process_group_members(leader).into_iter().filter(process_alive).collect();
     for mark in targets {
         if process_alive(mark) && !out.iter().any(|m| m.pid == mark.pid) {
             out.push(mark.clone());

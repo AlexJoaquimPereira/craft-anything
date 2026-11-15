@@ -303,7 +303,7 @@ pub(crate) fn lock(ws: &Workspace, id: u32) -> Result<PinLock, ToolError> {
     let dir = ws.root.join(PINNED);
     std::fs::create_dir_all(&dir).map_err(|e| ToolError::io(dir.display(), e))?;
     let path = dir.join(format!("{id}.lock"));
-    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path).map_err(|e| ToolError::io(path.display(), e))?;
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).map_err(|e| ToolError::io(path.display(), e))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         match file.try_lock() {
