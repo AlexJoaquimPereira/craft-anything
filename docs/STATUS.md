@@ -19,6 +19,9 @@ quota access. Fixture tests cover bundle layouts, permissions, root order, statu
 parsing, the selected CLI and rendered results. Regression coverage also includes
 a second adapter's true/false/unknown results, its configuration folder, and
 unrelated login-shell errors. See [Codex setup and limits](codex.md).
+A refused tool that setup doesn't approve now says to add the tool inside the generated inline
+`tools` table in `config.toml`; the dotted-table form failed with "cannot extend value of type
+inline table with a dotted key" (#1867). The hint and both table shapes are covered by tests.
 Each pending check is tracked by job ID: a worker-start failure or caught panic
 frees only that agent's Check action for retry, preserving concurrent checks.
 Local Apple Silicon verification: 777 AI/GUI unit, integration and smoke tests

@@ -1033,7 +1033,7 @@ pub(crate) fn codex_tool_text(item: &Value, tool: &str, ours: bool) -> String {
             );
         }
         return format!(
-            "Codex blocked {tool}: it can't ask for approval here. To allow it, set approval_mode = \"approve\" under [mcp_servers.craft-anything.tools.{tool}] in Codex's config.toml."
+            "Codex blocked {tool}: it can't ask for approval here. To allow it, add {tool} = {{ approval_mode = \"approve\" }} inside `tools` in Codex's config.toml."
         );
     }
     text

@@ -2038,8 +2038,10 @@ mod tests {
         let other = line.replace("rebuild_start", "build_command_run");
         let events = adapter_for("codex").parse(&mut p, &serde_json::from_str::<Value>(&other).unwrap());
         let text = format!("{events:?}");
-        assert!(text.contains("[mcp_servers.craft-anything.tools.build_command_run]") && !text.contains("setup --client codex"), "{text}");
+        assert!(text.contains("inside `tools`") && !text.contains("setup --client codex"), "{text}");
         let hint = adapters::codex_tool_text(&serde_json::from_str::<Value>(&other).unwrap()["item"], "build_command_run", true);
+        assert!(hint.contains("build_command_run = { approval_mode = \"approve\" }"), "{hint}");
+        assert!(!hint.contains("[mcp_servers.craft-anything.tools.build_command_run]"), "{hint}");
         assert!(hint.len() <= 200, "the feed keeps 200 characters: {} in {hint}", hint.len());
         // Another server's refusal keeps Codex's words: our setup can't fix it.
         let mut p = StreamParser::new(adapter_for("codex"));
@@ -2057,6 +2059,39 @@ mod tests {
             r#"{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","tool":"x","status":"failed","result":null,"error":{"message":"boom"}}}"#;
         let text = format!("{:?}", adapter_for("codex").parse(&mut p, &serde_json::from_str::<Value>(other).unwrap()));
         assert!(text.contains("boom") && !text.contains("null"), "{text}");
+    }
+
+    /// #1867: setup writes `tools` as one inline table, so the old dotted-table guidance failed
+    /// with "cannot extend value of type inline table with a dotted key". The hinted inline key
+    /// extends it, and a standard tools table takes the same key.
+    #[test]
+    fn the_codex_approval_hint_extends_the_inline_tools_table() {
+        let generated =
+            "[mcp_servers.craft-anything]\ncommand = \"craft-anything-cli\"\nargs = [\"mcp\"]\ntools = { rebuild_start = { approval_mode = \"approve\" } }\n";
+        let dotted = format!("{generated}\n[mcp_servers.craft-anything.tools.build_command_run]\napproval_mode = \"approve\"\n");
+        assert!(toml::from_str::<toml::Value>(&dotted).is_err(), "the old guidance cannot extend an inline table");
+
+        let item: Value = serde_json::from_str(r#"{"error":{"message":"tool build_command_run requires approval, but approval policy is never"}}"#).unwrap();
+        let hint = adapters::codex_tool_text(&item, "build_command_run", true);
+        assert!(hint.contains("build_command_run = { approval_mode = \"approve\" }"), "{hint}");
+
+        let inline = "[mcp_servers.craft-anything]\ncommand = \"craft-anything-cli\"\nargs = [\"mcp\"]\ntools = { rebuild_start = { approval_mode = \"approve\" }, build_command_run = { approval_mode = \"approve\" } }\n";
+        let doc: toml::Value = toml::from_str(inline).unwrap();
+        let approved = |doc: &toml::Value| {
+            doc.get("mcp_servers")
+                .and_then(|v| v.get("craft-anything"))
+                .and_then(|v| v.get("tools"))
+                .and_then(|v| v.get("build_command_run"))
+                .and_then(|v| v.get("approval_mode"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        };
+        assert_eq!(approved(&doc).as_deref(), Some("approve"), "the inline tools table takes the key");
+
+        let table =
+            "[mcp_servers.craft-anything.tools]\nrebuild_start = { approval_mode = \"approve\" }\nbuild_command_run = { approval_mode = \"approve\" }\n";
+        let doc: toml::Value = toml::from_str(table).unwrap();
+        assert_eq!(approved(&doc).as_deref(), Some("approve"), "a standard tools table takes the same key");
     }
 
     #[test]
