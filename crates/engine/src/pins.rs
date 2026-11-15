@@ -21,7 +21,7 @@ use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
-use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive};
+use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, stop_group};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,13 +96,54 @@ impl PinMode {
     }
 }
 
-/// One program a pin started, kept so a restart can tell whether it is still running. A pid alone
-/// is not an identity: the system can reuse it, so the start token is checked too.
+/// One process left in a pin's group after a stop attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinMember {
+    pub pid: u32,
+    pub start: String,
+    pub boot: String,
+}
+
+impl PinMember {
+    fn mark(&self, group: u32) -> ProcessMark {
+        ProcessMark { pid: self.pid, start: self.start.clone(), boot: self.boot.clone(), group }
+    }
+}
+
+/// The program a pin started and any members left after a stop attempt. The pid, start token and
+/// boot identify the group leader; members keep survivors protected across a restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PinRun {
     pub pid: u32,
     /// The platform's start-time token (`/proc/<pid>/stat` field 22 on Linux).
     pub start: String,
+    /// The boot the leader belongs to; an older record without one is not trusted.
+    #[serde(default)]
+    pub boot: String,
+    /// Processes still alive in the group after a stop that did not finish.
+    #[serde(default)]
+    pub members: Vec<PinMember>,
+}
+
+impl PinRun {
+    fn leader(&self) -> ProcessMark {
+        ProcessMark { pid: self.pid, start: self.start.clone(), boot: self.boot.clone(), group: self.pid }
+    }
+
+    fn running_marks(&self) -> Vec<ProcessMark> {
+        let mut out = Vec::new();
+        let leader = self.leader();
+        if process_alive(&leader) {
+            out.push(leader);
+        }
+        for member in &self.members {
+            let mark = member.mark(self.pid);
+            if process_alive(&mark) {
+                out.push(mark);
+            }
+        }
+        out
+    }
 }
 
 /// One pin (`pinned/<id>/pin.json`).
@@ -152,30 +193,30 @@ impl Pin {
         self.dir(ws).join("last-run.log")
     }
 
-    /// The recorded runs that are still the same running process.
+    /// The recorded runs that are still the same running process (leader or a group member).
     pub fn running_runs(&self) -> Vec<ProcessMark> {
-        self.runs
-            .iter()
-            .filter_map(|r| {
-                let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
-                process_alive(&mark).then_some(mark)
-            })
-            .collect()
+        self.runs.iter().flat_map(PinRun::running_marks).collect()
     }
 
-    /// Forget recorded runs whose process is gone; whether anything was removed.
+    /// Forget recorded runs and members whose processes are gone; whether anything changed.
     pub fn prune_runs(&mut self) -> bool {
+        let mut changed = false;
+        for run in &mut self.runs {
+            let before = run.members.len();
+            run.members.retain(|m| process_alive(&m.mark(run.pid)));
+            changed |= run.members.len() != before;
+        }
         let before = self.runs.len();
-        self.runs.retain(|r| process_alive(&ProcessMark { pid: r.pid, start: r.start.clone() }));
-        self.runs.len() != before
+        self.runs.retain(|r| process_alive(&r.leader()) || !r.members.is_empty());
+        changed || self.runs.len() != before
     }
 
     /// Remember a started process once; whether it was new.
     pub fn remember_run(&mut self, mark: &ProcessMark) -> bool {
-        if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start) {
+        if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start && r.boot == mark.boot) {
             return false;
         }
-        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone() });
+        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members: Vec::new() });
         true
     }
 
@@ -230,9 +271,50 @@ pub fn read_pin(bytes: &[u8]) -> Result<Pin, ToolError> {
     serde_json::from_value(doc).map_err(|e| ToolError::invalid(e.to_string()))
 }
 
+pub(crate) fn ensure_current(pin: &Pin) -> Result<(), ToolError> {
+    if pin.version > PIN_VERSION {
+        return Err(ToolError::invalid(format!("This pin was made by a newer Craft Anything (format {}).", pin.version))
+            .with_remediation("Update Craft Anything to open or change it."));
+    }
+    Ok(())
+}
+
 pub(crate) fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
+    ensure_current(pin)?;
     let json = serde_json::to_vec_pretty(pin).map_err(|e| ToolError::internal(e.to_string()))?;
     crate::project::write_atomic(&pin.dir(ws).join(PIN_FILE), &json)
+}
+
+/// Stop the recorded group; whether it is gone and the members still alive.
+pub(crate) fn stop_run(run: &PinRun) -> (bool, Vec<PinMember>) {
+    let known: Vec<ProcessMark> = run.members.iter().map(|m| m.mark(run.pid)).collect();
+    let (stopped, survivors) = stop_group(&run.leader(), &known);
+    (stopped, survivors.into_iter().map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot }).collect())
+}
+
+/// Holds a pin's cross-process lock; dropping it releases the lock.
+pub(crate) struct PinLock {
+    _file: std::fs::File,
+}
+
+/// Serialize a pin's read-launch-save sequence across app and CLI processes. The wait is bounded:
+/// another holder gets ten seconds, then the caller is told to try again.
+pub(crate) fn lock(ws: &Workspace, id: u32) -> Result<PinLock, ToolError> {
+    let dir = ws.root.join(PINNED);
+    std::fs::create_dir_all(&dir).map_err(|e| ToolError::io(dir.display(), e))?;
+    let path = dir.join(format!("{id}.lock"));
+    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path).map_err(|e| ToolError::io(path.display(), e))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(PinLock { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(ToolError::invalid("Another Craft Anything is using this pin.").with_remediation("Try again in a moment."));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(ToolError::io(path.display(), e)),
+        }
+    }
 }
 
 /// A project's pins, oldest first. Folders without a readable pin.json (a copy still being made,
@@ -928,6 +1010,20 @@ mod tests {
         delete(&ws, pin.id).unwrap();
         assert!(list(&ws).is_empty() && !pin.dir(&ws).exists());
         assert_eq!(delete(&ws, pin.id).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_newer_pin_is_not_rewritten() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(d.path(), "Newer", "an app", TargetRef::None).unwrap();
+        let dir = ws.root.join(PINNED).join("1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = br#"{"version":9,"id":1,"name":"New","mode":"frozen","created_ms":1,"colour":"red"}"#;
+        std::fs::write(dir.join(PIN_FILE), text).unwrap();
+        let pin = read_pin(text).unwrap();
+        let err = save(&ws, &pin).unwrap_err();
+        assert!(err.message.contains("newer"), "{err:?}");
+        assert_eq!(std::fs::read(dir.join(PIN_FILE)).unwrap(), text, "a newer file is left exactly as it was");
     }
 
     #[test]

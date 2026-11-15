@@ -34,9 +34,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
-use nix::sys::signal::{Signal, kill, killpg};
-#[cfg(target_os = "linux")]
-use nix::unistd::{Pid, getpgid};
+use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 
 /// Returns true when the caller wants the run stopped.
 pub type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -1260,32 +1258,45 @@ impl Launched {
     }
 }
 
-/// A process's identity across an app restart: its pid and the platform token for when it started.
-/// A pid on its own is not an identity: the system can reuse it for another program.
+/// A process's identity across an app restart: its pid, start-time token and the boot it belongs
+/// to. A pid alone is not an identity: the system can reuse it, and a new boot reuses all of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessMark {
     pub pid: u32,
     /// The platform's start-time token; a reused pid has a different one.
     pub start: String,
+    /// The boot the process belongs to.
+    pub boot: String,
+    /// Its process group (the leader's pid).
+    pub group: u32,
 }
 
-/// How long a recorded process gets to end after being asked, before it is killed.
+/// How long recorded processes get to end after being asked, before they are killed.
 #[cfg(target_os = "linux")]
 const FOREIGN_REAP_GRACE: Duration = Duration::from_secs(2);
 
-/// The running process's identity, when this platform can tell when it started.
+#[cfg(target_os = "linux")]
+fn boot_id() -> Option<String> {
+    static BOOT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BOOT.get_or_init(|| std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string())).clone()
+}
+
+/// The running process's identity, when this platform can tell when and under which boot it
+/// started.
 #[cfg(target_os = "linux")]
 pub fn process_mark(pid: u32) -> Option<ProcessMark> {
+    let boot = boot_id()?;
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command name is parenthesised and may itself hold spaces and `)`; the fields start
-    // after the last one. Field 3 is the state, then ... and field 22 is starttime.
+    // after the last one. Field 3 is the state, field 5 the process group, field 22 starttime.
     let (_, rest) = text.rsplit_once(')')?;
-    let mut fields = rest.split_whitespace();
-    if fields.next()? == "Z" {
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    if *fields.first()? == "Z" {
         return None;
     }
-    let start = fields.nth(18)?;
-    Some(ProcessMark { pid, start: start.to_string() })
+    let group = fields.get(2)?.parse().ok()?;
+    let start = fields.get(19)?.to_string();
+    Some(ProcessMark { pid, start, boot, group })
 }
 
 /// Other platforms don't record a process across a restart yet.
@@ -1294,53 +1305,108 @@ pub fn process_mark(_pid: u32) -> Option<ProcessMark> {
     None
 }
 
-/// Whether the same process is still running: its pid and start token both match.
+/// Whether the same process is still running: pid, start token and boot all match.
 pub fn process_alive(mark: &ProcessMark) -> bool {
-    process_mark(mark.pid).is_some_and(|now| now.start == mark.start)
+    process_mark(mark.pid).is_some_and(|now| now.start == mark.start && now.boot == mark.boot)
 }
 
-/// Stop the recorded process, only while it is still the same one; whether it ended.
+/// The processes still in `leader`'s group. A group whose leader pid now names a different
+/// process is a reused group and gives nothing.
 #[cfg(target_os = "linux")]
-pub fn stop_process(mark: &ProcessMark) -> bool {
-    if !process_alive(mark) {
-        return false;
+pub fn process_group_members(leader: &ProcessMark) -> Vec<ProcessMark> {
+    if leader.boot.is_empty() || boot_id().as_deref() != Some(leader.boot.as_str()) {
+        return Vec::new();
     }
-    let Ok(pid) = i32::try_from(mark.pid) else { return false };
-    let pid = Pid::from_raw(pid);
-    // A pinned program is started as its process group's leader; a process that isn't gets only
-    // its own signal, never a group it happens to share.
-    let group = getpgid(Some(pid)).is_ok_and(|g| g == pid);
-    let send = |signal: Signal| {
-        if group {
-            if killpg(pid, signal).is_err() {
-                let _ = kill(pid, signal);
-            }
-        } else {
-            let _ = kill(pid, signal);
-        }
-    };
-    send(Signal::SIGTERM);
-    let deadline = Instant::now() + FOREIGN_REAP_GRACE;
-    while process_alive(mark) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
+    if let Some(now) = process_mark(leader.pid)
+        && (now.start != leader.start || now.boot != leader.boot)
+    {
+        return Vec::new();
     }
-    if process_alive(mark) {
-        send(Signal::SIGKILL);
-        let deadline = Instant::now() + FOREIGN_REAP_GRACE;
-        while process_alive(mark) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let Some(mark) = process_mark(pid) else { continue };
+        if mark.boot == leader.boot && mark.group == leader.pid {
+            out.push(mark);
         }
     }
-    let ended = !process_alive(mark);
-    if !ended {
-        log::warn!("program {}: still there after it was stopped", mark.pid);
-    }
-    ended
+    out
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn stop_process(_mark: &ProcessMark) -> bool {
-    false
+pub fn process_group_members(_leader: &ProcessMark) -> Vec<ProcessMark> {
+    Vec::new()
+}
+
+/// Signal one marked process through a pidfd, so a reused pid can never receive the signal.
+#[cfg(target_os = "linux")]
+fn signal_mark(mark: &ProcessMark, signal: Signal) {
+    if !process_alive(mark) {
+        return;
+    }
+    let Some(pid) = i32::try_from(mark.pid).ok().and_then(Pid::from_raw) else { return };
+    let Ok(fd) = pidfd_open(pid, PidfdFlags::empty()) else { return };
+    // The fd now names one process. Re-check that it is still the marked one before signalling.
+    if !process_alive(mark) {
+        return;
+    }
+    let _ = pidfd_send_signal(&fd, signal);
+}
+
+#[cfg(target_os = "linux")]
+fn group_survivors(leader: &ProcessMark, targets: &[ProcessMark]) -> Vec<ProcessMark> {
+    let mut out: Vec<ProcessMark> = process_group_members(leader).into_iter().filter(|m| process_alive(m)).collect();
+    for mark in targets {
+        if process_alive(mark) && !out.iter().any(|m| m.pid == mark.pid) {
+            out.push(mark.clone());
+        }
+    }
+    out
+}
+
+/// Stop a recorded group: ask every member, then kill the survivors. A leader that exits is not
+/// proof its members did; the group is followed until no member is left. Returns whether the
+/// group is gone and the identities still alive.
+#[cfg(target_os = "linux")]
+pub fn stop_group(leader: &ProcessMark, known: &[ProcessMark]) -> (bool, Vec<ProcessMark>) {
+    let mut targets = process_group_members(leader);
+    for mark in known {
+        if mark.group == leader.pid && process_alive(mark) && !targets.iter().any(|m| m.pid == mark.pid) {
+            targets.push(mark.clone());
+        }
+    }
+    if targets.is_empty() {
+        return (false, Vec::new());
+    }
+    for mark in &targets {
+        signal_mark(mark, Signal::TERM);
+    }
+    let deadline = Instant::now() + FOREIGN_REAP_GRACE;
+    let mut survivors = group_survivors(leader, &targets);
+    while !survivors.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        survivors = group_survivors(leader, &targets);
+    }
+    if !survivors.is_empty() {
+        for mark in &survivors {
+            signal_mark(mark, Signal::KILL);
+        }
+        let deadline = Instant::now() + FOREIGN_REAP_GRACE;
+        survivors = group_survivors(leader, &targets);
+        while !survivors.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            survivors = group_survivors(leader, &targets);
+        }
+    }
+    if !survivors.is_empty() {
+        log::warn!("process group {}: {} process(es) still there after being stopped", leader.pid, survivors.len());
+    }
+    (survivors.is_empty(), survivors)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn stop_group(_leader: &ProcessMark, _known: &[ProcessMark]) -> (bool, Vec<ProcessMark>) {
+    (false, Vec::new())
 }
 
 /// The system's "open this" program: Explorer on Windows, `open` on macOS, `xdg-open` elsewhere.
@@ -1607,12 +1673,16 @@ mod launch_tests {
     fn a_foreign_process_is_identified_by_its_start_time_and_stopped_only_then() {
         let l = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
         let mark = process_mark(l.pid()).expect("the process is running");
+        assert!(!mark.boot.is_empty());
         assert!(process_alive(&mark));
-        let wrong = ProcessMark { pid: mark.pid, start: "0".into() };
-        assert!(!process_alive(&wrong));
-        assert!(!stop_process(&wrong), "a wrong start token never stops it");
+        let wrong_start = ProcessMark { start: "0".into(), ..mark.clone() };
+        assert!(!process_alive(&wrong_start));
+        let wrong_boot = ProcessMark { boot: "0".into(), ..mark.clone() };
+        assert!(!process_alive(&wrong_boot));
+        assert!(!stop_group(&wrong_start, &[]).0, "a wrong start token never stops it");
         assert!(l.is_running(), "the process is still there");
-        assert!(stop_process(&mark), "the same process is stopped");
+        let (stopped, survivors) = stop_group(&mark, &[]);
+        assert!(stopped && survivors.is_empty(), "the same process is stopped");
         assert!(l.wait_timeout(Duration::from_secs(2)).is_some());
         assert!(process_mark(mark.pid).is_none() || !process_alive(&mark));
     }

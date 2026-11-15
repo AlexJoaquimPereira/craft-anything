@@ -6,7 +6,7 @@ use crate::pins::{self, Opened, PinMode, Runs};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::workspace::Workspace;
 use craft_anything_evidence::{ErrorCode, ToolError};
-use craft_anything_platform::{Launch, ProcessMark, process_alive, process_mark, stop_process};
+use craft_anything_platform::{Launch, process_mark};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -278,7 +278,9 @@ fn project_pins_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
 fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: OpenParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
     let mut pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     let mut changed = pin.prune_runs();
     if !p.another
         && let Some(mark) = pin.running_runs().into_iter().next()
@@ -310,37 +312,44 @@ fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
 fn project_pin_stop(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: PinParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
     let mut pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     let mut stopped = runs(ctx).stop(&pin.app_dir(&ws));
     let before = pin.runs.len();
-    stopped += stop_recorded(&mut pin.runs, process_alive, stop_process);
-    if pin.runs.len() != before {
+    stopped += stop_recorded(&mut pin.runs, pins::stop_run);
+    if before > 0 {
         pins::save(&ws, &pin)?;
     }
     Ok(ToolOutput::Value(json!({"pin": pin.id, "stopped": stopped})))
 }
 
-/// Stop the recorded processes that are still ours; how many stopped. A process still there after
-/// a failed stop stays recorded, so the next stop can try again.
-fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut alive: impl FnMut(&ProcessMark) -> bool, mut stop: impl FnMut(&ProcessMark) -> bool) -> usize {
+/// Stop the recorded groups; how many were stopped completely. A group with a surviving member
+/// stays recorded with that member, so listing and deletion keep protecting it and a later stop
+/// can continue.
+fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut stop: impl FnMut(&pins::PinRun) -> (bool, Vec<pins::PinMember>)) -> usize {
     let mut stopped = 0;
-    runs.retain(|r| {
-        let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
-        if !alive(&mark) {
-            return false;
-        }
-        if stop(&mark) {
+    let mut keep = Vec::new();
+    for mut run in runs.drain(..) {
+        let (all_stopped, survivors) = stop(&run);
+        if all_stopped {
             stopped += 1;
-            return false;
         }
-        alive(&mark)
-    });
+        if !survivors.is_empty() {
+            run.members = survivors;
+            keep.push(run);
+        }
+    }
+    *runs = keep;
     stopped
 }
 
 fn project_pin_rename(_ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: RenameParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
+    let pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     Ok(ToolOutput::Value(json!({"pin": pins::rename(&ws, p.pin, &p.name)?})))
 }
 
@@ -350,7 +359,9 @@ fn project_pin_delete(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         return Err(ToolError::invalid("Removing a pin can't be undone.").with_remediation("Pass confirm: true to remove it."));
     }
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
     let pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     // An old live pin runs the project's app: what's running there isn't the pin's to keep.
     if pin.mode.keeps_copy() && (!runs(ctx).running(&pin.app_dir(&ws)).is_empty() || !pin.running_runs().is_empty()) {
         return Err(ToolError::invalid(format!("{} is open.", pin.name)).with_remediation("Close it (project_pin_stop), then remove it."));
@@ -367,15 +378,17 @@ mod tests {
 
     #[test]
     fn a_failed_stop_keeps_a_live_record() {
-        let run = |pid| pins::PinRun { pid, start: "s".into() };
+        let run = |pid| pins::PinRun { pid, start: "s".into(), boot: "b".into(), members: Vec::new() };
+        let member = |pid| pins::PinMember { pid, start: "s".into(), boot: "b".into() };
         let mut runs = vec![run(7)];
-        assert_eq!(stop_recorded(&mut runs, |_| true, |_| false), 0);
+        assert_eq!(stop_recorded(&mut runs, |_| (false, vec![member(8)])), 0);
         assert_eq!(runs.len(), 1, "a failed stop keeps the live record");
-        let mut runs = vec![run(8)];
-        assert_eq!(stop_recorded(&mut runs, |_| true, |_| true), 1);
-        assert!(runs.is_empty(), "a stopped process's record is cleared");
+        assert_eq!(runs[0].members, vec![member(8)], "the surviving member is kept");
         let mut runs = vec![run(9)];
-        assert_eq!(stop_recorded(&mut runs, |_| false, |_| true), 0);
+        assert_eq!(stop_recorded(&mut runs, |_| (true, Vec::new())), 1);
+        assert!(runs.is_empty(), "a stopped group's record is cleared");
+        let mut runs = vec![run(10)];
+        assert_eq!(stop_recorded(&mut runs, |_| (false, Vec::new())), 0);
         assert!(runs.is_empty(), "a dead record is dropped without a stop");
     }
 

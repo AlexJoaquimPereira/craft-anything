@@ -499,8 +499,19 @@ that checks the PID), and test by killing the owner, not by dropping the guard.
 
 **A pid was trusted across a restart.** A pinned program's process id can be reused by another
 process, so keeping only the id could show the wrong program as running or kill it. Keep the
-platform's start-time token with the pid, check both before showing it running or stopping it, and
-test a matching and a mismatched token.
+platform's start-time token and boot id with the pid, treat a mark without a boot id as untrusted,
+check all three before showing it running or stopping it, and test matching and mismatched tokens.
+
+**A group leader's exit was taken for the group's.** A SIGTERM can take the leader while a child
+ignores it; stopping only checked the leader, so the child survived with no record. Follow the
+process group, signal each member through a stable pidfd, escalate to SIGKILL for survivors, and
+keep the survivors in the run record; test a child that ignores TERM.
+
+**A pin's read-launch-save raced another process, and a newer file was rewritten.** Atomic writes
+and the in-process session lock didn't stop two engines losing each other's run record, and a
+version newer than this build was saved back after unknown fields were dropped. Hold a
+cross-process pin lock over the whole read-launch-save sequence, and refuse a newer version before
+any launch or save; test two engines and a v9 pin.
 
 **Separate target folders fill the disk.** Agents given their own `CARGO_TARGET_DIR` under
 `target/` (to avoid locking a running exe) left them behind; one reached 79 GB and the disk filled
