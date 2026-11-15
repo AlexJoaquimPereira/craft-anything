@@ -987,6 +987,7 @@ Owner: open · Status: in progress
 - [ ] OpenCode logs "Received a progress notification for an unknown token" for our tool server
       after calls through 2.x's `execute` (seen live on Linux, 2.2.5): check that our MCP server
       sends progress only for a request that carried a `progressToken`, and only before its result
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.2-mcp-progress-token
 - [x] Stop with a plain error when the `opencode` found is 1.x (its `run --help` has no
       `--standalone`), instead of running it anyway and showing its usage (#1111)
       — claimed: Agapenordev, branch bugfix/r2.2-opencode-v1-refusal
