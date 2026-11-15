@@ -569,6 +569,11 @@ but `dotnet::pe::parse_pe` still read data directory 14 at a fixed offset, so a 
 header could borrow the CLI directory from section-table bytes. When a structure's declared size
 is enforced, search every reader of its fixed offsets and test each one with a short declared size.
 
+**A carver read optional-header fields the header didn't declare.** The firmware scanner read the
+PE certificate table and `SizeOfHeaders` at fixed offsets even when `SizeOfOptionalHeader` ended
+first, so a short header could over-carve into the next embedded object. Bound every fixed-offset
+field by the declared header, and test a short declared size beside the full-header control.
+
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and
 test signaling/quiet pairs as well as different payloads; retain numeric conversion for display.

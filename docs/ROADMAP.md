@@ -2412,9 +2412,9 @@ Owner: open · Status: in progress
       directory can be parsed as a .NET assembly from section-table bytes, or refused with a
       misleading section error; bound it as `pe::headers` does.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-dotnet-pe-optional-header
-- [ ] The firmware carver's PE region reads the certificate directory at a fixed offset without
-      checking the declared optional-header size, so a short header can over-carve into the next
-      embedded object; bound it as `pe::headers` does.
+- [x] The firmware carver's PE region reads the certificate directory and `SizeOfHeaders` at fixed
+      offsets without checking the declared optional-header size, so a short header can over-carve
+      into the next embedded object; bound them as `pe::headers` does.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-firmware-pe-certificate-dir
 - [x] A valid ASAR header written as `{ "files": ...` (a space) or with another key first is not
       recognized by the format-dispatch `looks_like_asar`, though the ASAR reader accepts it; use
