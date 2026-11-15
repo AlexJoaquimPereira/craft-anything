@@ -327,16 +327,29 @@ fn project_pin_stop(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
 /// Stop the recorded groups; how many were stopped completely. A group with a surviving member
 /// stays recorded with that member, so listing and deletion keep protecting it and a later stop
 /// can continue.
-fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut stop: impl FnMut(&pins::PinRun) -> (bool, Vec<pins::PinMember>)) -> usize {
+fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut stop: impl FnMut(&pins::PinRun) -> (bool, bool, Vec<pins::PinMember>, bool)) -> usize {
     let mut stopped = 0;
     let mut keep = Vec::new();
     for mut run in runs.drain(..) {
-        let (all_stopped, survivors) = stop(&run);
-        if all_stopped {
-            stopped += 1;
+        let (gone, stopped_here, survivors, confirmed) = stop(&run);
+        if !confirmed {
+            run.uncertain = true;
+            keep.push(run);
+            continue;
         }
-        if !survivors.is_empty() {
+        if gone {
+            if stopped_here {
+                stopped += 1;
+            }
+            continue;
+        }
+        if survivors.is_empty() {
+            // Defensive: a group that is not confirmed gone keeps its recovery record.
+            run.uncertain = true;
+            keep.push(run);
+        } else {
             run.members = survivors;
+            run.uncertain = false;
             keep.push(run);
         }
     }
@@ -378,18 +391,22 @@ mod tests {
 
     #[test]
     fn a_failed_stop_keeps_a_live_record() {
-        let run = |pid| pins::PinRun { pid, start: "s".into(), boot: "b".into(), members: Vec::new() };
+        let run = |pid| pins::PinRun { pid, start: "s".into(), boot: "b".into(), members: Vec::new(), uncertain: false };
         let member = |pid| pins::PinMember { pid, start: "s".into(), boot: "b".into() };
         let mut runs = vec![run(7)];
-        assert_eq!(stop_recorded(&mut runs, |_| (false, vec![member(8)])), 0);
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, vec![member(8)], true)), 0);
         assert_eq!(runs.len(), 1, "a failed stop keeps the live record");
         assert_eq!(runs[0].members, vec![member(8)], "the surviving member is kept");
         let mut runs = vec![run(9)];
-        assert_eq!(stop_recorded(&mut runs, |_| (true, Vec::new())), 1);
+        assert_eq!(stop_recorded(&mut runs, |_| (true, true, Vec::new(), true)), 1);
         assert!(runs.is_empty(), "a stopped group's record is cleared");
         let mut runs = vec![run(10)];
-        assert_eq!(stop_recorded(&mut runs, |_| (false, Vec::new())), 0);
-        assert!(runs.is_empty(), "a dead record is dropped without a stop");
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, Vec::new(), false)), 0);
+        assert_eq!(runs.len(), 1, "an unconfirmed group keeps its recovery record");
+        assert!(runs[0].uncertain);
+        let mut runs = vec![run(11)];
+        assert_eq!(stop_recorded(&mut runs, |_| (true, false, Vec::new(), true)), 0);
+        assert!(runs.is_empty(), "an already-gone record is cleared but not counted");
     }
 
     #[cfg(unix)]

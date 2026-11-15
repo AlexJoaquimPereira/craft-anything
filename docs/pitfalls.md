@@ -504,8 +504,14 @@ check all three before showing it running or stopping it, and test matching and 
 
 **A group leader's exit was taken for the group's.** A SIGTERM can take the leader while a child
 ignores it; stopping only checked the leader, so the child survived with no record. Follow the
-process group, signal each member through a stable pidfd, escalate to SIGKILL for survivors, and
-keep the survivors in the run record; test a child that ignores TERM.
+process group even after the leader exits (listing and pruning discover its members), signal each
+member through a stable pidfd, escalate to SIGKILL for survivors, and keep the survivors in the run
+record; test a child that ignores TERM and one that outlives its leader.
+
+**An unreadable `/proc` looked like an empty group.** Flattening `read_dir` errors made a stop drop
+the record while the process could still be running. Propagate the error, mark the record
+uncertain, and keep listing and deletion protection until a later stop confirms the group is gone;
+test the unconfirmed retention.
 
 **A pin's read-launch-save raced another process, and a newer file was rewritten.** Atomic writes
 and the in-process session lock didn't stop two engines losing each other's run record, and a

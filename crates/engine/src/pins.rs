@@ -21,7 +21,7 @@ use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
-use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, stop_group};
+use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, process_group_members, stop_group};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -123,26 +123,54 @@ pub struct PinRun {
     /// Processes still alive in the group after a stop that did not finish.
     #[serde(default)]
     pub members: Vec<PinMember>,
+    /// A stop could not establish that the group is gone (for example `/proc` was unreadable);
+    /// keep the run recorded and protective until a later stop confirms it.
+    #[serde(default)]
+    pub uncertain: bool,
 }
 
 impl PinRun {
     fn leader(&self) -> ProcessMark {
         ProcessMark { pid: self.pid, start: self.start.clone(), boot: self.boot.clone(), group: self.pid }
     }
-
     fn running_marks(&self) -> Vec<ProcessMark> {
-        let mut out = Vec::new();
         let leader = self.leader();
+        let mut out: Vec<ProcessMark> = Vec::new();
         if process_alive(&leader) {
-            out.push(leader);
+            push_run_mark(&mut out, leader.clone());
+        }
+        match process_group_members(&leader) {
+            Ok(members) => {
+                for mark in members {
+                    if process_alive(&mark) {
+                        push_run_mark(&mut out, mark);
+                    }
+                }
+            }
+            Err(_) => {
+                // A group we couldn't look at is not a group that is gone.
+                if !self.uncertain {
+                    push_run_mark(&mut out, leader.clone());
+                }
+            }
         }
         for member in &self.members {
             let mark = member.mark(self.pid);
             if process_alive(&mark) {
-                out.push(mark);
+                push_run_mark(&mut out, mark);
             }
         }
+        if self.uncertain && out.is_empty() {
+            push_run_mark(&mut out, leader);
+        }
         out
+    }
+}
+
+/// Add a mark once, keyed by pid, start token and boot.
+fn push_run_mark(out: &mut Vec<ProcessMark>, mark: ProcessMark) {
+    if !out.iter().any(|m| m.pid == mark.pid && m.start == mark.start && m.boot == mark.boot) {
+        out.push(mark);
     }
 }
 
@@ -198,16 +226,35 @@ impl Pin {
         self.runs.iter().flat_map(PinRun::running_marks).collect()
     }
 
-    /// Forget recorded runs and members whose processes are gone; whether anything changed.
+    /// Forget recorded runs and members whose processes are gone; whether anything changed. A
+    /// group whose leader is gone is still followed: a live child keeps its run recorded.
     pub fn prune_runs(&mut self) -> bool {
         let mut changed = false;
         for run in &mut self.runs {
-            let before = run.members.len();
-            run.members.retain(|m| process_alive(&m.mark(run.pid)));
-            changed |= run.members.len() != before;
+            let leader = run.leader();
+            match process_group_members(&leader) {
+                Ok(live) => {
+                    let mut members: Vec<PinMember> = live
+                        .into_iter()
+                        .filter(|m| !(m.pid == run.pid && m.start == run.start && m.boot == run.boot))
+                        .map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot })
+                        .collect();
+                    members.sort_by(|a, b| a.pid.cmp(&b.pid).then_with(|| a.start.cmp(&b.start)));
+                    members.dedup();
+                    changed |= members != run.members || run.uncertain;
+                    run.members = members;
+                    run.uncertain = false;
+                }
+                Err(_) => {
+                    if !run.uncertain {
+                        run.uncertain = true;
+                        changed = true;
+                    }
+                }
+            }
         }
         let before = self.runs.len();
-        self.runs.retain(|r| process_alive(&r.leader()) || !r.members.is_empty());
+        self.runs.retain(|r| process_alive(&r.leader()) || !r.members.is_empty() || r.uncertain);
         changed || self.runs.len() != before
     }
 
@@ -216,7 +263,7 @@ impl Pin {
         if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start && r.boot == mark.boot) {
             return false;
         }
-        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members: Vec::new() });
+        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members: Vec::new(), uncertain: false });
         true
     }
 
@@ -285,11 +332,12 @@ pub(crate) fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
     crate::project::write_atomic(&pin.dir(ws).join(PIN_FILE), &json)
 }
 
-/// Stop the recorded group; whether it is gone and the members still alive.
-pub(crate) fn stop_run(run: &PinRun) -> (bool, Vec<PinMember>) {
+/// Stop the recorded group; whether it is gone, the members still alive, and whether the
+/// disappearance was confirmed.
+pub(crate) fn stop_run(run: &PinRun) -> (bool, bool, Vec<PinMember>, bool) {
     let known: Vec<ProcessMark> = run.members.iter().map(|m| m.mark(run.pid)).collect();
-    let (stopped, survivors) = stop_group(&run.leader(), &known);
-    (stopped, survivors.into_iter().map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot }).collect())
+    let outcome = stop_group(&run.leader(), &known);
+    (outcome.gone, outcome.stopped, outcome.survivors.into_iter().map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot }).collect(), outcome.confirmed)
 }
 
 /// Holds a pin's cross-process lock; dropping it releases the lock.

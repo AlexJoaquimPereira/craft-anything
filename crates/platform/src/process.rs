@@ -1311,31 +1311,41 @@ pub fn process_alive(mark: &ProcessMark) -> bool {
 }
 
 /// The processes still in `leader`'s group. A group whose leader pid now names a different
-/// process is a reused group and gives nothing.
+/// process is a reused group and gives nothing. Fails when `/proc` can't be read, so a caller
+/// never mistakes "couldn't look" for "no members".
 #[cfg(target_os = "linux")]
-pub fn process_group_members(leader: &ProcessMark) -> Vec<ProcessMark> {
+pub fn process_group_members(leader: &ProcessMark) -> Result<Vec<ProcessMark>, std::io::Error> {
     if leader.boot.is_empty() || boot_id().as_deref() != Some(leader.boot.as_str()) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if let Some(now) = process_mark(leader.pid)
         && (now.start != leader.start || now.boot != leader.boot)
     {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
         let Some(mark) = process_mark(pid) else { continue };
         if mark.boot == leader.boot && mark.group == leader.pid {
             out.push(mark);
         }
     }
-    out
+    // A leader that isn't its own group's id (an unusual launch) is still the process to stop.
+    if let Some(now) = process_mark(leader.pid)
+        && now.start == leader.start
+        && now.boot == leader.boot
+        && !out.iter().any(|m| m.pid == now.pid)
+    {
+        out.push(now);
+    }
+    Ok(out)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn process_group_members(_leader: &ProcessMark) -> Vec<ProcessMark> {
-    Vec::new()
+pub fn process_group_members(_leader: &ProcessMark) -> Result<Vec<ProcessMark>, std::io::Error> {
+    Ok(Vec::new())
 }
 
 /// Signal one marked process through a pidfd, so a reused pid can never receive the signal.
@@ -1354,59 +1364,90 @@ fn signal_mark(mark: &ProcessMark, signal: Signal) {
 }
 
 #[cfg(target_os = "linux")]
-fn group_survivors(leader: &ProcessMark, targets: &[ProcessMark]) -> Vec<ProcessMark> {
-    let mut out: Vec<ProcessMark> = process_group_members(leader).into_iter().filter(process_alive).collect();
+fn group_survivors(leader: &ProcessMark, targets: &[ProcessMark]) -> Result<Vec<ProcessMark>, std::io::Error> {
+    let mut out: Vec<ProcessMark> = process_group_members(leader)?.into_iter().filter(process_alive).collect();
     for mark in targets {
         if process_alive(mark) && !out.iter().any(|m| m.pid == mark.pid) {
             out.push(mark.clone());
         }
     }
-    out
+    Ok(out)
+}
+
+/// What a group stop established.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupStop {
+    /// No live member was found.
+    pub gone: bool,
+    /// At least one live member was found and is now gone (a record that was already stale counts
+    /// as gone, not stopped).
+    pub stopped: bool,
+    /// Members still alive after the stop.
+    pub survivors: Vec<ProcessMark>,
+    /// Whether `/proc` could be read; false means "not known", never "gone".
+    pub confirmed: bool,
 }
 
 /// Stop a recorded group: ask every member, then kill the survivors. A leader that exits is not
-/// proof its members did; the group is followed until no member is left. Returns whether the
-/// group is gone and the identities still alive.
+/// proof its members did; the group is followed until no member is left. When `/proc` can't be
+/// read the result is unconfirmed and the caller keeps its record.
 #[cfg(target_os = "linux")]
-pub fn stop_group(leader: &ProcessMark, known: &[ProcessMark]) -> (bool, Vec<ProcessMark>) {
-    let mut targets = process_group_members(leader);
+pub fn stop_group(leader: &ProcessMark, known: &[ProcessMark]) -> GroupStop {
+    let mut targets = match process_group_members(leader) {
+        Ok(targets) => targets,
+        Err(_) => {
+            return GroupStop { gone: false, stopped: false, survivors: known.to_vec(), confirmed: false };
+        }
+    };
     for mark in known {
         if mark.group == leader.pid && process_alive(mark) && !targets.iter().any(|m| m.pid == mark.pid) {
             targets.push(mark.clone());
         }
     }
     if targets.is_empty() {
-        return (false, Vec::new());
+        return GroupStop { gone: true, stopped: false, survivors: Vec::new(), confirmed: true };
     }
     for mark in &targets {
         signal_mark(mark, Signal::TERM);
     }
     let deadline = Instant::now() + FOREIGN_REAP_GRACE;
-    let mut survivors = group_survivors(leader, &targets);
+    let mut survivors = match group_survivors(leader, &targets) {
+        Ok(survivors) => survivors,
+        Err(_) => return GroupStop { gone: false, stopped: false, survivors: targets, confirmed: false },
+    };
     while !survivors.is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
-        survivors = group_survivors(leader, &targets);
+        survivors = match group_survivors(leader, &targets) {
+            Ok(survivors) => survivors,
+            Err(_) => return GroupStop { gone: false, stopped: false, survivors: targets, confirmed: false },
+        };
     }
     if !survivors.is_empty() {
         for mark in &survivors {
             signal_mark(mark, Signal::KILL);
         }
         let deadline = Instant::now() + FOREIGN_REAP_GRACE;
-        survivors = group_survivors(leader, &targets);
+        survivors = match group_survivors(leader, &targets) {
+            Ok(survivors) => survivors,
+            Err(_) => return GroupStop { gone: false, stopped: false, survivors: targets, confirmed: false },
+        };
         while !survivors.is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
-            survivors = group_survivors(leader, &targets);
+            survivors = match group_survivors(leader, &targets) {
+                Ok(survivors) => survivors,
+                Err(_) => return GroupStop { gone: false, stopped: false, survivors: targets, confirmed: false },
+            };
         }
     }
     if !survivors.is_empty() {
         log::warn!("process group {}: {} process(es) still there after being stopped", leader.pid, survivors.len());
     }
-    (survivors.is_empty(), survivors)
+    GroupStop { gone: survivors.is_empty(), stopped: survivors.is_empty(), survivors, confirmed: true }
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn stop_group(_leader: &ProcessMark, _known: &[ProcessMark]) -> (bool, Vec<ProcessMark>) {
-    (false, Vec::new())
+pub fn stop_group(_leader: &ProcessMark, _known: &[ProcessMark]) -> GroupStop {
+    GroupStop { gone: false, stopped: false, survivors: Vec::new(), confirmed: false }
 }
 
 /// The system's "open this" program: Explorer on Windows, `open` on macOS, `xdg-open` elsewhere.
@@ -1679,10 +1720,11 @@ mod launch_tests {
         assert!(!process_alive(&wrong_start));
         let wrong_boot = ProcessMark { boot: "0".into(), ..mark.clone() };
         assert!(!process_alive(&wrong_boot));
-        assert!(!stop_group(&wrong_start, &[]).0, "a wrong start token never stops it");
+        let wrong = stop_group(&wrong_start, &[]);
+        assert!(wrong.gone && wrong.confirmed && wrong.survivors.is_empty(), "a wrong start token never signals it");
         assert!(l.is_running(), "the process is still there");
-        let (stopped, survivors) = stop_group(&mark, &[]);
-        assert!(stopped && survivors.is_empty(), "the same process is stopped");
+        let stopped = stop_group(&mark, &[]);
+        assert!(stopped.gone && stopped.confirmed && stopped.survivors.is_empty(), "the same process is stopped");
         assert!(l.wait_timeout(Duration::from_secs(2)).is_some());
         assert!(process_mark(mark.pid).is_none() || !process_alive(&mark));
     }

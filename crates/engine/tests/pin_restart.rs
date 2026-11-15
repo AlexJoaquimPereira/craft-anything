@@ -149,6 +149,32 @@ fn a_group_member_that_ignores_term_is_killed() {
 }
 
 #[test]
+fn a_live_child_keeps_a_pin_recorded_after_its_leader_exits() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = workspace(d.path(), "sh -c 'trap \"\" TERM; sleep 30' &\necho $! > child.pid\nsleep 3");
+    let engine = Engine::new(craft_anything_engine::testing::session());
+    let made = call(&engine, "project_pin_create", json!({"project": ws.root}));
+    let id = made["pin"]["id"].as_u64().unwrap() as u32;
+    let opened = call(&engine, "project_pin_open", json!({"project": ws.root, "pin": id}));
+    let leader = opened["pid"].as_u64().unwrap() as u32;
+    let child: u32 = std::fs::read_to_string(pins::get(&ws, id).unwrap().app_dir(&ws).join("child.pid")).unwrap().trim().parse().unwrap();
+
+    // The leader leaves on its own after the open; the child ignores TERM and stays in the group.
+    wait_gone(leader);
+    let restarted = Engine::new(craft_anything_engine::testing::session());
+    let list = call(&restarted, "project_pins_list", json!({"project": ws.root}));
+    assert_eq!(list["pins"][0]["running"], true, "the live child keeps the run recorded: {list}");
+    let stopped = call(&restarted, "project_pin_stop", json!({"project": ws.root, "pin": id}));
+    assert!(stopped["stopped"].as_u64().unwrap() >= 1, "{stopped}");
+    wait_gone(child);
+    let after = call(&restarted, "project_pins_list", json!({"project": ws.root}));
+    assert_eq!(after["pins"][0]["running"], false, "{after}");
+    let file = pin_file(&ws, id);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(saved["runs"], json!([]), "the stopped group is forgotten");
+}
+
+#[test]
 fn two_engines_opening_the_same_pin_keep_both_runs() {
     let d = tempfile::tempdir().unwrap();
     let ws = workspace(d.path(), "sleep 5");
