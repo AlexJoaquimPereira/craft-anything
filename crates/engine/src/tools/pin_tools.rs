@@ -321,7 +321,8 @@ fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
             Err(_) => true,
         };
         if record {
-            if pin.remember_run(&mark) {
+            let members = live.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+            if pin.remember_run(&mark, members) {
                 changed = true;
             }
             if live.is_err() {

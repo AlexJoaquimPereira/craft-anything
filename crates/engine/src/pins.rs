@@ -268,12 +268,18 @@ impl Pin {
         changed || self.runs.len() != before
     }
 
-    /// Remember a started process once; whether it was new.
-    pub fn remember_run(&mut self, mark: &ProcessMark) -> bool {
+    /// Remember a started process once, storing the group members discovered at spawn; whether it
+    /// was new.
+    pub fn remember_run(&mut self, mark: &ProcessMark, members: &[ProcessMark]) -> bool {
         if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start && r.boot == mark.boot) {
             return false;
         }
-        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members: Vec::new(), uncertain: false });
+        let members = members
+            .iter()
+            .filter(|m| !(m.pid == mark.pid && m.start == mark.start && m.boot == mark.boot))
+            .map(|m| PinMember { pid: m.pid, start: m.start.clone(), boot: m.boot.clone() })
+            .collect();
+        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members, uncertain: false });
         true
     }
 

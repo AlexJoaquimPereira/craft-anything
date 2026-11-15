@@ -184,6 +184,8 @@ fn a_quick_exit_leader_with_a_live_child_is_recorded() {
     let opened = call(&engine, "project_pin_open", json!({"project": ws.root, "pin": id}));
     assert_eq!(opened["closed_at_once"]["code"], 0, "the leader quit at once: {opened}");
     let child: u32 = std::fs::read_to_string(pins::get(&ws, id).unwrap().app_dir(&ws).join("child.pid")).unwrap().trim().parse().unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(pin_file(&ws, id)).unwrap()).unwrap();
+    assert!(saved["runs"][0]["members"].as_array().unwrap().iter().any(|m| m["pid"] == json!(child)), "the discovered child is stored in the run: {saved}");
 
     let restarted = Engine::new(craft_anything_engine::testing::session());
     let list = call(&restarted, "project_pins_list", json!({"project": ws.root}));
