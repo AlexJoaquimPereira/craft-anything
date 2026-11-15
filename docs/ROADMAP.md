@@ -1040,6 +1040,10 @@ Owner: open · Status: in progress
       approve that tool in Codex's own `config.toml` instead, and keep the setup hint for the tools
       setup approves (`AGENT_APP_PREAPPROVED_TOOLS`)
       — claimed: FuryNocturn, branch bugfix/r2.2-codex-blocked-tool-hint
+- [ ] Codex's approval guidance names a dotted table that cannot extend the inline `tools` table
+      setup writes, so following it fails with "cannot extend value of type inline table with a
+      dotted key" (#1867): give the inline form and cover it with a config-shape regression.
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.2-codex-approval-hint
 - [x] Codex: resume support (`codex exec resume <id>`), verified on a real install
       — claimed: Codex, branch feature/r2.2-codex-resume (local workspace)
       — verified on macOS with Codex 0.169.0-alpha.11.1: MCP call, sandboxed file write,
