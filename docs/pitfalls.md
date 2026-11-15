@@ -497,6 +497,11 @@ that checks the PID), and test by killing the owner, not by dropping the guard.
 **Stopping a long run leaves children behind** unless every program goes through
 `craft_anything_platform::process`. After stopping one, check that its child processes are gone.
 
+**A pid was trusted across a restart.** A pinned program's process id can be reused by another
+process, so keeping only the id could show the wrong program as running or kill it. Keep the
+platform's start-time token with the pid, check both before showing it running or stopping it, and
+test a matching and a mismatched token.
+
 **Separate target folders fill the disk.** Agents given their own `CARGO_TARGET_DIR` under
 `target/` (to avoid locking a running exe) left them behind; one reached 79 GB and the disk filled
 mid-build ("not enough space", os error 112). Delete an agent's target folder when its work is

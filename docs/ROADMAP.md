@@ -1724,7 +1724,7 @@ to the project next.
 - [ ] Pins of one project sharing with each other, so a third frozen copy of the same assets
       takes no more space
 - [ ] Pin a website (a frozen copy of the built site, each served on its own port)
-- [ ] Linux: a pin started before the app restarted shows as running and can be stopped (keep its
+- [x] Linux: a pin started before the app restarted shows as running and can be stopped (keep its
       process id and `/proc` start time in the pin, and check both before stopping it)
       — claimed: AlexJoaquimPereira, branch bugfix/r2.10-pin-restart-state-linux
 - [ ] macOS and Windows: the same, with the platform's own start-time token (`ps` or a safe process

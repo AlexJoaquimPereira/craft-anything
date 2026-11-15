@@ -6,7 +6,7 @@ use crate::pins::{self, Opened, PinMode, Runs};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::workspace::Workspace;
 use craft_anything_evidence::{ErrorCode, ToolError};
-use craft_anything_platform::Launch;
+use craft_anything_platform::{Launch, ProcessMark, process_alive, process_mark, stop_process};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_pins_list",
             title: "List pinned builds",
-            summary: "The pins of one project, or of every project in the project folders from settings: id, name, frozen or light, the round it was pinned at, its size, and whether it's running (started in this session).",
+            summary: "The pins of one project, or of every project in the project folders from settings: id, name, frozen or light, the round it was pinned at, its size, and whether it's running (started in this session, or a Linux program recorded before a restart).",
             beginner: "Shows the versions you kept.",
             toolset: Toolset::Projects,
             effects: Effects::READ_ONLY,
@@ -43,7 +43,7 @@ pub fn specs() -> Vec<ToolSpec> {
             summary: "Start a pinned build in its own window. If it's already running, says so instead of starting a second copy, unless `another` is true (copies of one pin share the files they save beside themselves). A start that quits within two seconds is reported with its exit code and last output. It runs the code the builder wrote, so it needs the person's consent.",
             beginner: "Opens a version you kept.",
             toolset: Toolset::Projects,
-            effects: Effects::LAUNCHES_PROCESS.union(Effects::EXECUTES_FOREIGN_CODE),
+            effects: Effects::LAUNCHES_PROCESS.union(Effects::EXECUTES_FOREIGN_CODE).union(Effects::WRITES_FILESYSTEM),
             requires: Requires::Nothing,
             input_schema: schema_of::<OpenParams>,
             run: project_pin_open,
@@ -51,10 +51,10 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_pin_stop",
             title: "Stop a pinned build",
-            summary: "Close what a pin started in this session (every copy of it).",
+            summary: "Close what a pin started (every copy of it), including a Linux program recorded before a restart.",
             beginner: "Closes a version you opened.",
             toolset: Toolset::Projects,
-            effects: Effects::MUTATES_SESSION,
+            effects: Effects::MUTATES_SESSION.union(Effects::WRITES_FILESYSTEM),
             requires: Requires::Nothing,
             input_schema: schema_of::<PinParams>,
             run: project_pin_stop,
@@ -256,13 +256,19 @@ fn project_pins_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
         for pin in pins::list(ws) {
             copied_bytes = copied_bytes.saturating_add(pin.bytes);
             let running = runs.running(&pin.app_dir(ws));
+            let mut pids: Vec<u32> = running.iter().map(|l| l.pid()).collect();
+            for mark in pin.running_runs() {
+                if !pids.contains(&mark.pid) {
+                    pids.push(mark.pid);
+                }
+            }
             out.push(json!({
                 "project": ws.root.display().to_string(),
                 "project_name": ws.manifest.name,
                 "pin": pin,
                 "folder": pin.dir(ws).display().to_string(),
-                "running": !running.is_empty(),
-                "pids": running.iter().map(|l| l.pid()).collect::<Vec<_>>(),
+                "running": !pids.is_empty(),
+                "pids": pids,
             }));
         }
     }
@@ -272,11 +278,31 @@ fn project_pins_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
 fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: OpenParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
-    let pin = pins::get(&ws, p.pin)?;
+    let mut pin = pins::get(&ws, p.pin)?;
+    let mut changed = pin.prune_runs();
+    if !p.another
+        && let Some(mark) = pin.running_runs().into_iter().next()
+    {
+        if changed {
+            pins::save(&ws, &pin)?;
+        }
+        return Ok(ToolOutput::Value(json!({"already_running": true, "pid": mark.pid, "pin": pin.id})));
+    }
     let launch = pin.launch(&ws, godot(ctx).as_deref())?;
     let mut out = start_program(ctx, &pin.app_dir(&ws), &pin.log_path(&ws), p.another, &pin.name, launch)?;
     if let Some(o) = out.as_object_mut() {
         o.insert("pin".into(), json!(pin.id));
+        // Record the process the restart must remember, unless it quit at once.
+        if o.get("closed_at_once").is_none_or(Value::is_null)
+            && let Some(pid) = o.get("pid").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
+            && let Some(mark) = process_mark(pid)
+            && pin.remember_run(&mark)
+        {
+            changed = true;
+        }
+    }
+    if changed {
+        pins::save(&ws, &pin)?;
     }
     Ok(ToolOutput::Value(out))
 }
@@ -284,8 +310,24 @@ fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
 fn project_pin_stop(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: PinParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
-    let pin = pins::get(&ws, p.pin)?;
-    let stopped = runs(ctx).stop(&pin.app_dir(&ws));
+    let mut pin = pins::get(&ws, p.pin)?;
+    let mut stopped = runs(ctx).stop(&pin.app_dir(&ws));
+    let before = pin.runs.len();
+    pin.runs.retain(|r| {
+        let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
+        if !process_alive(&mark) {
+            return false;
+        }
+        if stop_process(&mark) {
+            stopped += 1;
+            return false;
+        }
+        // Keep a process that is still there, so the next stop can try again.
+        !process_alive(&mark)
+    });
+    if pin.runs.len() != before {
+        pins::save(&ws, &pin)?;
+    }
     Ok(ToolOutput::Value(json!({"pin": pin.id, "stopped": stopped})))
 }
 
@@ -303,7 +345,7 @@ fn project_pin_delete(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     let ws = open_project(&p.project)?;
     let pin = pins::get(&ws, p.pin)?;
     // An old live pin runs the project's app: what's running there isn't the pin's to keep.
-    if pin.mode.keeps_copy() && !runs(ctx).running(&pin.app_dir(&ws)).is_empty() {
+    if pin.mode.keeps_copy() && (!runs(ctx).running(&pin.app_dir(&ws)).is_empty() || !pin.running_runs().is_empty()) {
         return Err(ToolError::invalid(format!("{} is open.", pin.name)).with_remediation("Close it (project_pin_stop), then remove it."));
     }
     pins::delete(&ws, p.pin)?;

@@ -21,7 +21,7 @@ use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
-use craft_anything_platform::{Ended, Launch, Launched};
+use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,13 +34,20 @@ use std::time::Duration;
 pub const PINNED: &str = "pinned";
 pub const PIN_FILE: &str = "pin.json";
 /// The current `pin.json` format version.
-pub const PIN_VERSION: u32 = 2;
+pub const PIN_VERSION: u32 = 3;
 /// Version 2 remembers the program selected for an argument-free launch inside the copied app.
-const PIN_STEPS: &[versioned::Step<Value>] = &[pin_v1_to_v2];
+/// Version 3 remembers the programs a pin started, so a restart can still see and stop them.
+const PIN_STEPS: &[versioned::Step<Value>] = &[pin_v1_to_v2, pin_v2_to_v3];
 
 fn pin_v1_to_v2(doc: &mut Value) -> Result<(), String> {
     let object = doc.as_object_mut().ok_or_else(|| "a pin must be an object".to_string())?;
     object.insert("program".into(), Value::Null);
+    Ok(())
+}
+
+fn pin_v2_to_v3(doc: &mut Value) -> Result<(), String> {
+    let object = doc.as_object_mut().ok_or_else(|| "a pin must be an object".to_string())?;
+    object.insert("runs".into(), Value::Array(Vec::new()));
     Ok(())
 }
 const _: () = assert!(PIN_STEPS.len() as u32 + 1 == PIN_VERSION, "one step per pin.json version after the first");
@@ -89,6 +96,15 @@ impl PinMode {
     }
 }
 
+/// One program a pin started, kept so a restart can tell whether it is still running. A pid alone
+/// is not an identity: the system can reuse it, so the start token is checked too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinRun {
+    pub pid: u32,
+    /// The platform's start-time token (`/proc/<pid>/stat` field 22 on Linux).
+    pub start: String,
+}
+
 /// One pin (`pinned/<id>/pin.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Pin {
@@ -114,6 +130,9 @@ pub struct Pin {
     /// Older pins and launches through an external runtime keep the existing discovery path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<PathBuf>,
+    /// Programs this pin started, with the start times that tell them from a reused pid.
+    #[serde(default)]
+    pub runs: Vec<PinRun>,
 }
 
 impl Pin {
@@ -131,6 +150,33 @@ impl Pin {
 
     pub fn log_path(&self, ws: &Workspace) -> PathBuf {
         self.dir(ws).join("last-run.log")
+    }
+
+    /// The recorded runs that are still the same running process.
+    pub fn running_runs(&self) -> Vec<ProcessMark> {
+        self.runs
+            .iter()
+            .filter_map(|r| {
+                let mark = ProcessMark { pid: r.pid, start: r.start.clone() };
+                process_alive(&mark).then_some(mark)
+            })
+            .collect()
+    }
+
+    /// Forget recorded runs whose process is gone; whether anything was removed.
+    pub fn prune_runs(&mut self) -> bool {
+        let before = self.runs.len();
+        self.runs.retain(|r| process_alive(&ProcessMark { pid: r.pid, start: r.start.clone() }));
+        self.runs.len() != before
+    }
+
+    /// Remember a started process once; whether it was new.
+    pub fn remember_run(&mut self, mark: &ProcessMark) -> bool {
+        if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start) {
+            return false;
+        }
+        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone() });
+        true
     }
 
     /// Resolve the recorded program within the copy; old pins retain their discovery behavior.
@@ -184,7 +230,7 @@ pub fn read_pin(bytes: &[u8]) -> Result<Pin, ToolError> {
     serde_json::from_value(doc).map_err(|e| ToolError::invalid(e.to_string()))
 }
 
-fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
+pub(crate) fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
     let json = serde_json::to_vec_pretty(pin).map_err(|e| ToolError::internal(e.to_string()))?;
     crate::project::write_atomic(&pin.dir(ws).join(PIN_FILE), &json)
 }
@@ -410,8 +456,19 @@ pub fn create(ws: &Workspace, mode: PinMode, name: Option<&str>, godot: Option<&
         (None, Some(r)) => format!("{project} · round {r}"),
         (None, None) => format!("{project} · pin {id}"),
     };
-    let mut pin =
-        Pin { version: PIN_VERSION, id, name, mode, created_ms: now_ms(), round, bytes: 0, shared_bytes: 0, copied_shared_bytes: 0, program: recorded_program };
+    let mut pin = Pin {
+        version: PIN_VERSION,
+        id,
+        name,
+        mode,
+        created_ms: now_ms(),
+        round,
+        bytes: 0,
+        shared_bytes: 0,
+        copied_shared_bytes: 0,
+        program: recorded_program,
+        runs: Vec::new(),
+    };
     let made = (|| {
         (pin.bytes, pin.shared_bytes, pin.copied_shared_bytes) = copy(ws, &program, &pin.app_dir(ws), mode, progress)?;
         pin.launch(ws, godot)?;
@@ -878,9 +935,16 @@ mod tests {
         let old = read_pin(br#"{"id":2,"name":"A","mode":"live","created_ms":5}"#).unwrap();
         assert_eq!((old.version, old.mode, old.bytes), (PIN_VERSION, PinMode::Live, 0));
         assert_eq!(old.program, None);
+        assert!(old.runs.is_empty(), "an older pin starts with no recorded runs");
         let frozen = read_pin(br#"{"version":1,"id":3,"name":"Old copy","mode":"frozen","created_ms":5,"program":"formerly-unknown"}"#).unwrap();
         assert_eq!(frozen.version, PIN_VERSION);
         assert_eq!(frozen.program, None, "the migration cannot invent the old pin's selected program");
+        assert!(frozen.runs.is_empty());
+        let v2 = read_pin(br#"{"version":2,"id":4,"name":"B","mode":"frozen","created_ms":5,"program":null}"#).unwrap();
+        assert_eq!(v2.version, PIN_VERSION);
+        assert!(v2.runs.is_empty(), "version 2 gains an empty run list");
+        let v3 = read_pin(br#"{"version":3,"id":5,"name":"C","mode":"frozen","created_ms":5,"runs":[{"pid":7,"start":"99"}]}"#).unwrap();
+        assert_eq!((v3.version, v3.runs.len()), (3, 1));
         let newer = read_pin(br#"{"version":9,"id":2,"name":"A","mode":"frozen","created_ms":5,"colour":"red"}"#).unwrap();
         assert_eq!(newer.version, 9, "a newer pin keeps its version");
         assert!(read_pin(b"[]").is_err());

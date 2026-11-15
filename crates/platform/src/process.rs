@@ -33,6 +33,11 @@ use std::sync::{Arc, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+use nix::sys::signal::{Signal, kill, killpg};
+#[cfg(target_os = "linux")]
+use nix::unistd::{Pid, getpgid};
+
 /// Returns true when the caller wants the run stopped.
 pub type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
 /// Receives each complete output line (without the line ending), lossily decoded as UTF-8.
@@ -1255,6 +1260,89 @@ impl Launched {
     }
 }
 
+/// A process's identity across an app restart: its pid and the platform token for when it started.
+/// A pid on its own is not an identity: the system can reuse it for another program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessMark {
+    pub pid: u32,
+    /// The platform's start-time token; a reused pid has a different one.
+    pub start: String,
+}
+
+/// How long a recorded process gets to end after being asked, before it is killed.
+#[cfg(target_os = "linux")]
+const FOREIGN_REAP_GRACE: Duration = Duration::from_secs(2);
+
+/// The running process's identity, when this platform can tell when it started.
+#[cfg(target_os = "linux")]
+pub fn process_mark(pid: u32) -> Option<ProcessMark> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is parenthesised and may itself hold spaces and `)`; the fields start
+    // after the last one. Field 3 is the state, then ... and field 22 is starttime.
+    let (_, rest) = text.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    if fields.next()? == "Z" {
+        return None;
+    }
+    let start = fields.nth(18)?;
+    Some(ProcessMark { pid, start: start.to_string() })
+}
+
+/// Other platforms don't record a process across a restart yet.
+#[cfg(not(target_os = "linux"))]
+pub fn process_mark(_pid: u32) -> Option<ProcessMark> {
+    None
+}
+
+/// Whether the same process is still running: its pid and start token both match.
+pub fn process_alive(mark: &ProcessMark) -> bool {
+    process_mark(mark.pid).is_some_and(|now| now.start == mark.start)
+}
+
+/// Stop the recorded process, only while it is still the same one; whether it ended.
+#[cfg(target_os = "linux")]
+pub fn stop_process(mark: &ProcessMark) -> bool {
+    if !process_alive(mark) {
+        return false;
+    }
+    let Ok(pid) = i32::try_from(mark.pid) else { return false };
+    let pid = Pid::from_raw(pid);
+    // A pinned program is started as its process group's leader; a process that isn't gets only
+    // its own signal, never a group it happens to share.
+    let group = getpgid(Some(pid)).is_ok_and(|g| g == pid);
+    let send = |signal: Signal| {
+        if group {
+            if killpg(pid, signal).is_err() {
+                let _ = kill(pid, signal);
+            }
+        } else {
+            let _ = kill(pid, signal);
+        }
+    };
+    send(Signal::SIGTERM);
+    let deadline = Instant::now() + FOREIGN_REAP_GRACE;
+    while process_alive(mark) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if process_alive(mark) {
+        send(Signal::SIGKILL);
+        let deadline = Instant::now() + FOREIGN_REAP_GRACE;
+        while process_alive(mark) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let ended = !process_alive(mark);
+    if !ended {
+        log::warn!("program {}: still there after it was stopped", mark.pid);
+    }
+    ended
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn stop_process(_mark: &ProcessMark) -> bool {
+    false
+}
+
 /// The system's "open this" program: Explorer on Windows, `open` on macOS, `xdg-open` elsewhere.
 pub fn system_opener() -> &'static str {
     if cfg!(windows) {
@@ -1514,6 +1602,21 @@ mod launch_tests {
     /// releases it only when the process exits: taking that lock after `stop()` is the exit probe,
     /// with no timing guess. A descendant that outlived the stop instead finishes its bounded loop
     /// and writes `descendant-survived` before its lock is released.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_foreign_process_is_identified_by_its_start_time_and_stopped_only_then() {
+        let l = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
+        let mark = process_mark(l.pid()).expect("the process is running");
+        assert!(process_alive(&mark));
+        let wrong = ProcessMark { pid: mark.pid, start: "0".into() };
+        assert!(!process_alive(&wrong));
+        assert!(!stop_process(&wrong), "a wrong start token never stops it");
+        assert!(l.is_running(), "the process is still there");
+        assert!(stop_process(&mark), "the same process is stopped");
+        assert!(l.wait_timeout(Duration::from_secs(2)).is_some());
+        assert!(process_mark(mark.pid).is_none() || !process_alive(&mark));
+    }
+
     #[test]
     fn stopping_a_watched_program_stops_its_descendant() {
         let dir = tempfile::Builder::new().prefix("watched descendant ").tempdir().unwrap();
