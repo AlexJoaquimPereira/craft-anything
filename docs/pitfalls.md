@@ -564,6 +564,10 @@ beside an external one, a nested index map, and the sources-only read used for b
 `formats::sourcemap`, but `js::find_map_url` kept requiring a literal space, so a bundle with the
 standard no-space annotation was analysed without its map. Have one implementation and call it
 from both places; a regression at the consumer's public entry point catches a copy that drifts.
+The same happened with the PE optional header: `pe::headers` was bounded by `SizeOfOptionalHeader`,
+but `dotnet::pe::parse_pe` still read data directory 14 at a fixed offset, so a short declared
+header could borrow the CLI directory from section-table bytes. When a structure's declared size
+is enforced, search every reader of its fixed offsets and test each one with a short declared size.
 
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and

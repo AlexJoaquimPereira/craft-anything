@@ -2407,11 +2407,14 @@ Owner: open · Status: in progress
 - [ ] `pe_is_managed` reads data-directory 14 at a fixed offset without checking the declared
       optional-header size, so a PE whose header ends before that directory can be classified as
       managed; bound it as `pe::headers` does.
-- [ ] `dotnet::pe::parse_pe` reads `NumberOfRvaAndSizes` and data directory 14 at fixed offsets
+- [x] `dotnet::pe::parse_pe` reads `NumberOfRvaAndSizes` and data directory 14 at fixed offsets
       without checking the declared optional-header size, so a PE whose header ends before that
       directory can be parsed as a .NET assembly from section-table bytes, or refused with a
       misleading section error; bound it as `pe::headers` does.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-dotnet-pe-optional-header
+- [ ] The firmware carver's PE region reads the certificate directory at a fixed offset without
+      checking the declared optional-header size, so a short header can over-carve into the next
+      embedded object; bound it as `dotnet::pe::parse_pe` now does.
 - [x] A valid ASAR header written as `{ "files": ...` (a space) or with another key first is not
       recognized by the format-dispatch `looks_like_asar`, though the ASAR reader accepts it; use
       one predicate.
