@@ -175,6 +175,25 @@ fn a_live_child_keeps_a_pin_recorded_after_its_leader_exits() {
 }
 
 #[test]
+fn a_quick_exit_leader_with_a_live_child_is_recorded() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = workspace(d.path(), "sh -c 'trap \"\" TERM; sleep 30' &\necho $! > child.pid\nsleep 0.2\nexit 0");
+    let engine = Engine::new(craft_anything_engine::testing::session());
+    let made = call(&engine, "project_pin_create", json!({"project": ws.root}));
+    let id = made["pin"]["id"].as_u64().unwrap() as u32;
+    let opened = call(&engine, "project_pin_open", json!({"project": ws.root, "pin": id}));
+    assert_eq!(opened["closed_at_once"]["code"], 0, "the leader quit at once: {opened}");
+    let child: u32 = std::fs::read_to_string(pins::get(&ws, id).unwrap().app_dir(&ws).join("child.pid")).unwrap().trim().parse().unwrap();
+
+    let restarted = Engine::new(craft_anything_engine::testing::session());
+    let list = call(&restarted, "project_pins_list", json!({"project": ws.root}));
+    assert_eq!(list["pins"][0]["running"], true, "the child keeps the quick-exit run recorded: {list}");
+    let stopped = call(&restarted, "project_pin_stop", json!({"project": ws.root, "pin": id}));
+    assert!(stopped["stopped"].as_u64().unwrap() >= 1, "{stopped}");
+    wait_gone(child);
+}
+
+#[test]
 fn two_engines_opening_the_same_pin_keep_both_runs() {
     let d = tempfile::tempdir().unwrap();
     let ws = workspace(d.path(), "sleep 5");

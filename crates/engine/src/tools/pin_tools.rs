@@ -6,7 +6,7 @@ use crate::pins::{self, Opened, PinMode, Runs};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::workspace::Workspace;
 use craft_anything_evidence::{ErrorCode, ToolError};
-use craft_anything_platform::{Launch, process_mark};
+use craft_anything_platform::{Launch, ProcessMark, process_group_members, process_mark};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -187,37 +187,59 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, la
         return Err(ToolError::new(ErrorCode::NotFound, "There's nothing to start: no built program here.")
             .with_remediation("Finish a build first (rebuild), or open the folder to look."));
     };
-    start_program(ctx, app, log, another, label, (program, args))
+    let (result, _) = start_program(ctx, app, log, another, label, (program, args));
+    result
 }
 
-/// Start a program from `app` through the run list, logging to `log`. The program is made absolute
-/// first because the child runs with `app` as its working directory.
-fn start_program(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, label: &str, (program, args): (PathBuf, Vec<String>)) -> Result<Value, ToolError> {
-    if let Some(dir) = log.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| ToolError::io(dir.display(), e))?;
+/// Start a program from `app` through the run list, logging to `log`. Returns the result and the
+/// leader mark captured immediately after spawn, before the quick-exit wait.
+fn start_program(
+    ctx: &mut Ctx<'_>,
+    app: &Path,
+    log: &Path,
+    another: bool,
+    label: &str,
+    (program, args): (PathBuf, Vec<String>),
+) -> (Result<Value, ToolError>, Option<ProcessMark>) {
+    if let Some(dir) = log.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return (Err(ToolError::io(dir.display(), e)), None);
     }
     let program = crate::outputs::absolute_program(&program);
     let launch = Launch::new(&program).args(&args).cwd(app).hide_console().log_to(log).label(label).remediation("Open the folder and start it by hand.");
-    let (launched, quit) = match runs(ctx).open(app, launch, another)? {
-        Opened::AlreadyRunning(l) => return Ok(json!({"already_running": true, "pid": l.pid(), "started": program.display().to_string()})),
-        Opened::Started { launched, quit } => (launched, quit),
+    let opened = match runs(ctx).open(app, launch, another) {
+        Ok(opened) => opened,
+        Err(e) => return (Err(e), None),
+    };
+    let (launched, quit, mark) = match opened {
+        Opened::AlreadyRunning(l) => {
+            return (Ok(json!({"already_running": true, "pid": l.pid(), "started": program.display().to_string()})), process_mark(l.pid()));
+        }
+        Opened::Started { launched, quit, mark } => (launched, quit, mark),
     };
     let last_output = pins::tail(log);
     match quit {
         Some(ended) if ended.code != Some(0) => {
             let code = ended.code.map_or_else(|| "it was stopped".to_string(), |c| format!("exit code {c}"));
             let said = if last_output.is_empty() { String::new() } else { format!(" It printed:\n{last_output}") };
-            Err(ToolError::new(ErrorCode::ProgramFailed, format!("{label} closed straight away ({code}).{said}"))
-                .with_remediation(format!("Its whole output is in {}.", log.display())))
+            (
+                Err(ToolError::new(ErrorCode::ProgramFailed, format!("{label} closed straight away ({code}).{said}"))
+                    .with_remediation(format!("Its whole output is in {}.", log.display()))),
+                mark,
+            )
         }
-        _ => Ok(json!({
-            "already_running": false,
-            "started": program.display().to_string(),
-            "args": args,
-            "pid": launched.pid(),
-            "closed_at_once": quit.map(|e| json!({"code": e.code, "after_ms": e.after.as_millis() as u64})),
-            "last_output": quit.map(|_| last_output),
-        })),
+        _ => (
+            Ok(json!({
+                "already_running": false,
+                "started": program.display().to_string(),
+                "args": args,
+                "pid": launched.pid(),
+                "closed_at_once": quit.map(|e| json!({"code": e.code, "after_ms": e.after.as_millis() as u64})),
+                "last_output": quit.map(|_| last_output),
+            })),
+            mark,
+        ),
     }
 }
 
@@ -291,17 +313,38 @@ fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
         return Ok(ToolOutput::Value(json!({"already_running": true, "pid": mark.pid, "pin": pin.id})));
     }
     let launch = pin.launch(&ws, godot(ctx).as_deref())?;
-    let mut out = start_program(ctx, &pin.app_dir(&ws), &pin.log_path(&ws), p.another, &pin.name, launch)?;
+    let (result, mark) = start_program(ctx, &pin.app_dir(&ws), &pin.log_path(&ws), p.another, &pin.name, launch);
+    if let Some(mark) = mark {
+        let live = process_group_members(&mark);
+        let record = match &live {
+            Ok(members) => !members.is_empty(),
+            Err(_) => true,
+        };
+        if record {
+            if pin.remember_run(&mark) {
+                changed = true;
+            }
+            if live.is_err() {
+                for run in &mut pin.runs {
+                    if run.pid == mark.pid && run.start == mark.start && run.boot == mark.boot && !run.uncertain {
+                        run.uncertain = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    let mut out = match result {
+        Ok(out) => out,
+        Err(e) => {
+            if changed {
+                pins::save(&ws, &pin)?;
+            }
+            return Err(e);
+        }
+    };
     if let Some(o) = out.as_object_mut() {
         o.insert("pin".into(), json!(pin.id));
-        // Record the process the restart must remember, unless it quit at once.
-        if o.get("closed_at_once").is_none_or(Value::is_null)
-            && let Some(pid) = o.get("pid").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
-            && let Some(mark) = process_mark(pid)
-            && pin.remember_run(&mark)
-        {
-            changed = true;
-        }
     }
     if changed {
         pins::save(&ws, &pin)?;
@@ -333,6 +376,11 @@ fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut stop: impl FnMut(&pins::PinRu
     for mut run in runs.drain(..) {
         let (gone, stopped_here, survivors, confirmed) = stop(&run);
         if !confirmed {
+            for member in survivors {
+                if !run.members.contains(&member) {
+                    run.members.push(member);
+                }
+            }
             run.uncertain = true;
             keep.push(run);
             continue;
@@ -405,6 +453,9 @@ mod tests {
         assert_eq!(runs.len(), 1, "an unconfirmed group keeps its recovery record");
         assert!(runs[0].uncertain);
         let mut runs = vec![run(11)];
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, vec![member(12)], false)), 0);
+        assert_eq!(runs[0].members, vec![member(12)], "a survivor from an unconfirmed stop is kept");
+        let mut runs = vec![run(13)];
         assert_eq!(stop_recorded(&mut runs, |_| (true, false, Vec::new(), true)), 0);
         assert!(runs.is_empty(), "an already-gone record is cleared but not counted");
     }

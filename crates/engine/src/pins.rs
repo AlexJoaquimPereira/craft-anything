@@ -21,7 +21,7 @@ use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
-use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, process_group_members, stop_group};
+use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, process_group_members, process_mark, stop_group};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -234,11 +234,21 @@ impl Pin {
             let leader = run.leader();
             match process_group_members(&leader) {
                 Ok(live) => {
-                    let mut members: Vec<PinMember> = live
-                        .into_iter()
-                        .filter(|m| !(m.pid == run.pid && m.start == run.start && m.boot == run.boot))
-                        .map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot })
+                    let mut members: Vec<PinMember> = run
+                        .members
+                        .iter()
+                        .filter(|m| process_alive(&m.mark(run.pid)) && !(m.pid == run.pid && m.start == run.start && m.boot == run.boot))
+                        .cloned()
                         .collect();
+                    for mark in live {
+                        if mark.pid == run.pid && mark.start == run.start && mark.boot == run.boot {
+                            continue;
+                        }
+                        let member = PinMember { pid: mark.pid, start: mark.start, boot: mark.boot };
+                        if !members.contains(&member) {
+                            members.push(member);
+                        }
+                    }
                     members.sort_by(|a, b| a.pid.cmp(&b.pid).then_with(|| a.start.cmp(&b.start)));
                     members.dedup();
                     changed |= members != run.members || run.uncertain;
@@ -701,8 +711,9 @@ pub fn tail(log: &Path) -> String {
 pub enum Opened {
     /// It was already running, and no other copy was asked for.
     AlreadyRunning(Launched),
-    /// Started; `quit` when it ended within [`QUICK_EXIT`].
-    Started { launched: Launched, quit: Option<Ended> },
+    /// Started; `quit` when it ended within [`QUICK_EXIT`], and the mark captured immediately
+    /// after spawn, before that wait.
+    Started { launched: Launched, quit: Option<Ended>, mark: Option<ProcessMark> },
 }
 
 /// Programs started from pins and Play in this session, by the folder they run from. Starts
@@ -733,7 +744,7 @@ impl Runs {
     /// Start `launch` from `dir`, unless something already runs from there and `another` isn't
     /// asked for. Waits up to [`QUICK_EXIT`] to see whether it quits straight away.
     pub fn open(&self, dir: &Path, launch: Launch, another: bool) -> Result<Opened, ToolError> {
-        let launched = {
+        let (launched, mark) = {
             let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             let list = map.entry(key(dir)).or_default();
             list.retain(Launched::is_running);
@@ -741,11 +752,14 @@ impl Runs {
                 return Ok(Opened::AlreadyRunning(first.clone()));
             }
             let launched = launch.start_watched()?;
+            // Capture the identity before the quick-exit wait: a leader that exits at once can
+            // leave a child that still needs recording.
+            let mark = process_mark(launched.pid());
             list.push(launched.clone());
-            launched
+            (launched, mark)
         };
         let quit = launched.wait_timeout(QUICK_EXIT);
-        Ok(Opened::Started { launched, quit })
+        Ok(Opened::Started { launched, quit, mark })
     }
 
     /// Stop everything running from `dir`; how many were stopped.
@@ -1107,6 +1121,39 @@ mod tests {
 
     fn shell(script: &str) -> Launch {
         if cfg!(windows) { Launch::new("cmd").args(["/C", script]).hide_console() } else { Launch::new("sh").args(["-c", script]) }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pruning_keeps_a_saved_member_the_group_scan_does_not_show() {
+        let leader = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
+        let member = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
+        let l = process_mark(leader.pid()).unwrap();
+        let m = process_mark(member.pid()).unwrap();
+        let mut pin = Pin {
+            version: PIN_VERSION,
+            id: 1,
+            name: "P".into(),
+            mode: PinMode::Frozen,
+            created_ms: 1,
+            round: None,
+            bytes: 0,
+            shared_bytes: 0,
+            copied_shared_bytes: 0,
+            program: None,
+            runs: vec![PinRun {
+                pid: l.pid,
+                start: l.start,
+                boot: l.boot,
+                members: vec![PinMember { pid: m.pid, start: m.start, boot: m.boot }],
+                uncertain: false,
+            }],
+        };
+        pin.prune_runs();
+        assert_eq!(pin.runs.len(), 1);
+        assert_eq!(pin.runs[0].members.len(), 1, "a saved live member absent from the group scan stays");
+        leader.stop();
+        member.stop();
     }
 
     #[test]
