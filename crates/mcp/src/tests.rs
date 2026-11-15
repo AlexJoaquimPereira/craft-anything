@@ -235,6 +235,34 @@ fn progress_token_gets_notifications_and_cancel_of_unknown_is_ignored() {
 }
 
 #[test]
+fn progress_needs_a_token() {
+    let out = run(&[req(1, "tools/call", json!({"name": "core_session_show", "arguments": {}}))]);
+    assert!(out.iter().all(|m| m["method"] != "notifications/progress"), "{out:?}");
+    assert_eq!(response(&out, 1)["result"]["isError"], false);
+}
+
+#[test]
+fn only_strings_and_numbers_are_progress_tokens() {
+    for token in [json!(null), json!({"bad": 1}), json!([1, 2]), json!(true)] {
+        let out = run(&[req(1, "tools/call", json!({"name": "core_session_show", "arguments": {}, "_meta": {"progressToken": token.clone()}}))]);
+        assert!(out.iter().all(|m| m["method"] != "notifications/progress"), "token {token}: {out:?}");
+        assert_eq!(response(&out, 1)["result"]["isError"], false);
+    }
+    let out = run(&[req(1, "tools/call", json!({"name": "core_session_show", "arguments": {}, "_meta": {"progressToken": 7}}))]);
+    let progress: Vec<&Value> = out.iter().filter(|m| m["method"] == "notifications/progress").collect();
+    assert!(!progress.is_empty(), "a number is a valid token: {out:?}");
+    assert_eq!(progress[0]["params"]["progressToken"], 7);
+}
+
+#[test]
+fn progress_comes_before_the_response() {
+    let out = run(&[req(1, "tools/call", json!({"name": "core_session_show", "arguments": {}, "_meta": {"progressToken": "p1"}}))]);
+    let progress = out.iter().position(|m| m["method"] == "notifications/progress").expect("a progress notification");
+    let result = out.iter().position(|m| m["id"] == json!(1)).expect("the response");
+    assert!(progress < result, "progress must come before its result: {out:?}");
+}
+
+#[test]
 fn memory_tools_work_over_mcp() {
     let out = run(&[req(1, "tools/call", json!({"name": "core_brief_write", "arguments": {"question": "How does login work?"}}))]);
     assert_eq!(response(&out, 1)["result"]["isError"], false);

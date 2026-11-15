@@ -1040,6 +1040,11 @@ normalize at the provider boundary; test serialized requests for known and unkno
 **A sender could exceed its MCP receiver's target limit.** Bound the handoff to the receiver's
 accepted count and retain the active target; test the boundary, truncation order and remote mode.
 
+**A present protocol field was not a valid one.** The MCP server echoed `_meta.progressToken`
+whenever it was present, including `null` and objects, so it sent progress for values the protocol
+doesn't allow. Check a protocol field's type, not only its presence, before acting on it; test
+missing, null, wrong-type and valid values.
+
 **A finding correction reset omitted confidence to inferred.** Edit defaults must preserve existing
 values unless explicitly changed; test omitted fields and every supplied confidence level.
 

@@ -436,7 +436,8 @@ impl Server {
     fn tools_call(&self, id: &Value, params: &Value, token: &CancelToken) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
         let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-        let progress_token = params.get("_meta").and_then(|m| m.get("progressToken")).cloned();
+        // MCP's ProgressToken is a string or a number; a null or structured value is not a token.
+        let progress_token = params.get("_meta").and_then(|m| m.get("progressToken")).filter(|t| t.is_string() || t.is_number()).cloned();
         let seq = Arc::new(AtomicU64::new(0));
         let result = match name {
             "list_toolsets" => Ok(ToolOutput::Value(self.toolsets_json())),

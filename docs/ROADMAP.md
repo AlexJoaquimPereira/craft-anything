@@ -984,10 +984,14 @@ Owner: open · Status: in progress
       with an error that had no details (seen live on Linux, a 2.2.6 service beside a 2.2.5 run).
       Keep a run's session out of the service's reach, if OpenCode allows it; until then
       `docs/opencode.md` says not to open OpenCode during a build
-- [ ] OpenCode logs "Received a progress notification for an unknown token" for our tool server
+- [x] OpenCode logs "Received a progress notification for an unknown token" for our tool server
       after calls through 2.x's `execute` (seen live on Linux, 2.2.5): check that our MCP server
-      sends progress only for a request that carried a `progressToken`, and only before its result
+      sends progress only for a request that carried a `progressToken`, and only before its result.
+      The server now accepts only a string or number token, and sends the notification before the
+      response; a missing, null, object, array or boolean token gets none.
       — claimed: AlexJoaquimPereira, branch bugfix/r2.2-mcp-progress-token
+- [ ] Recheck the OpenCode 2.x "unknown token" log against a build with the progress-token filter;
+      the live warning was not reproduced, and the server-side path is covered by tests.
 - [x] Stop with a plain error when the `opencode` found is 1.x (its `run --help` has no
       `--standalone`), instead of running it anyway and showing its usage (#1111)
       — claimed: Agapenordev, branch bugfix/r2.2-opencode-v1-refusal
