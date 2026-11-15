@@ -1129,13 +1129,30 @@ mod tests {
         if cfg!(windows) { Launch::new("cmd").args(["/C", script]).hide_console() } else { Launch::new("sh").args(["-c", script]) }
     }
 
+    /// Stops a started process when the test ends, so a failed assertion leaves nothing behind.
+    #[cfg(target_os = "linux")]
+    struct StopOnDrop(Launched);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn pruning_keeps_a_saved_member_the_group_scan_does_not_show() {
-        let leader = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
-        let member = Launch::new("sh").args(["-c", "sleep 30"]).start_watched().unwrap();
-        let l = process_mark(leader.pid()).unwrap();
-        let m = process_mark(member.pid()).unwrap();
+        // `exec` replaces the shell, so the leader's group holds only the leader on every
+        // `/bin/sh` (dash forks a `sleep` child beside the shell otherwise).
+        let leader = StopOnDrop(Launch::new("sh").args(["-c", "exec sleep 30"]).start_watched().unwrap());
+        let member = StopOnDrop(Launch::new("sh").args(["-c", "exec sleep 30"]).start_watched().unwrap());
+        let l = process_mark(leader.0.pid()).unwrap();
+        let m = process_mark(member.0.pid()).unwrap();
+        let scanned = process_group_members(&l).unwrap();
+        assert!(process_alive(&m), "the saved member is live");
+        assert!(!scanned.iter().any(|p| p.pid == m.pid), "the saved member is not in the leader's group: {scanned:?}");
+        assert_eq!(scanned.len(), 1, "the leader's group holds only the leader: {scanned:?}");
         let mut pin = Pin {
             version: PIN_VERSION,
             id: 1,
@@ -1158,8 +1175,6 @@ mod tests {
         pin.prune_runs();
         assert_eq!(pin.runs.len(), 1);
         assert_eq!(pin.runs[0].members.len(), 1, "a saved live member absent from the group scan stays");
-        leader.stop();
-        member.stop();
     }
 
     #[test]
