@@ -823,6 +823,9 @@ impl Worker {
             let adapter = opts.adapters.for_backend(&entry.config.model, &entry.options);
             if let Some(host) = remote_host {
                 adapter.check_remote_tool_server(host, &self.stop)?;
+                // The settings check may be slow (one ssh read), so it follows the run's stop.
+                let stop = crate::model::Stop::for_tool(self.stop.clone());
+                adapter.check_remote_options(&entry.options, host, &stop)?;
             } else {
                 crate::cli_agents::check_builder_tools(adapter.as_ref(), &entry.config.model, &entry.options, &ws.root, &self.stop)?;
                 let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
