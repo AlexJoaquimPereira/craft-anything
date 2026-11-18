@@ -940,6 +940,12 @@ edges past `4 × max_nodes` with no counter, and `js_app_map` reported Complete 
 edges had been cut. Count every unique dropped edge, name the cap in a limitation, and make
 coverage partial for either cap. Test a dense graph and a node-capped one.
 
+**A cut read still counted as complete.** `managed_reconstruction_check` noted its `.cs` file or
+size budget in a note but kept coverage complete, so members declared only in unread files read as
+missing in a complete check. Return the cut from the source reader, add a distinct
+`source_files_cut` limitation and mark coverage partial, apart from the unlisted-folder limitation;
+test a read cut at the file budget.
+
 **A fact list was cut and the graph looked complete.** `js_app` resolved only the first 2,000
 imports per module and discarded `ModuleFacts.truncated`, so later dependencies lost their edge and
 role with no limitation. Resolve every retained import, aggregate per-file truncation into one

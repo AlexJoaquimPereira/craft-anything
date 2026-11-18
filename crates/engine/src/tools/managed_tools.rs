@@ -755,7 +755,7 @@ fn managed_native_calls_verify(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolO
 
 /// (file name, text) pairs, notes about what was skipped, and the folders that couldn't be listed
 /// in full as (path, reason).
-type Sources = (Vec<(String, String)>, Vec<String>, Vec<(String, String)>);
+type Sources = (Vec<(String, String)>, Vec<String>, Vec<(String, String)>, bool);
 
 fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
     const MAX_TOTAL: u64 = 64 << 20;
@@ -765,7 +765,7 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
             if t.len() as u64 > MAX_TOTAL {
                 return Err(ToolError::new(ErrorCode::OverLimit, "source_text is larger than 64 MiB"));
             }
-            Ok((vec![("source_text".into(), t.clone())], notes, Vec::new()))
+            Ok((vec![("source_text".into(), t.clone())], notes, Vec::new(), false))
         }
         (None, Some(sp)) => {
             let path = PathBuf::from(sp);
@@ -778,7 +778,7 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
                     return Err(ToolError::new(ErrorCode::OverLimit, format!("{sp} is larger than 64 MiB")));
                 }
                 let bytes = std::fs::read(&path).map_err(|e| ToolError::io(sp, e))?;
-                return Ok((vec![(sp.clone(), String::from_utf8_lossy(&bytes).into_owned())], notes, Vec::new()));
+                return Ok((vec![(sp.clone(), String::from_utf8_lossy(&bytes).into_owned())], notes, Vec::new(), false));
             }
             let skip = |_: &str| false;
             let walked = walk_dir(
@@ -797,8 +797,10 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
             }
             let mut out = Vec::new();
             let mut total = 0u64;
+            let mut cut = false;
             for f in walked.files.iter().filter(|f| f.rel.to_ascii_lowercase().ends_with(".cs")) {
                 if out.len() >= p.max_files.clamp(1, 100_000) || total.saturating_add(f.size) > MAX_TOTAL {
+                    cut = true;
                     notes.push("file count or size limit reached; some .cs files were not read".into());
                     break;
                 }
@@ -811,12 +813,13 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
                 }
             }
             if walked.truncated {
+                cut = true;
                 notes.push(WALK_CUT_NOTE.into());
             }
             if out.is_empty() {
                 return Err(nothing_found_error(format!("no .cs files under {sp}"), &walked.unlisted));
             }
-            Ok((out, notes, walked.unlisted))
+            Ok((out, notes, walked.unlisted, cut))
         }
         _ => Err(ToolError::invalid("pass exactly one of source_path or source_text")),
     }
@@ -826,7 +829,7 @@ fn managed_reconstruction_check(ctx: &mut Ctx<'_>, params: Value) -> Result<Tool
     let p: ImportParams = parse_params(params)?;
     let max_rows = p.max_rows.clamp(1, 100_000);
     let ms = managed_source(ctx, &p.members, &["managed_members_list"])?;
-    let (sources, notes, unlisted) = read_sources(&p, ctx)?;
+    let (sources, notes, unlisted, cut) = read_sources(&p, ctx)?;
     let a = open_assembly(&ms.input)?;
     let members = dotnet::members(&a, &MemberOptions { type_filter: ms.type_names.clone(), skip_bodies: true, ..MemberOptions::default() });
     let mut scan = csharp::CsScan::default();
@@ -866,6 +869,12 @@ fn managed_reconstruction_check(ctx: &mut Ctx<'_>, params: Value) -> Result<Tool
     // Source files in a folder that couldn't be listed were never compared: members only they
     // declare read as missing.
     lims.extend(unlisted_limitation(&unlisted));
+    if cut {
+        lims.push(Limitation::new(
+            "source_files_cut",
+            "The file count or size limit cut the .cs read; members declared only in unread files are missing from this check, not from the program.",
+        ));
+    }
     lims.extend(scan.warnings.iter().take(20).map(|w| Limitation::new("source_scan", w.clone())));
     let mut b = builder(
         ctx,
@@ -892,7 +901,7 @@ fn managed_reconstruction_check(ctx: &mut Ctx<'_>, params: Value) -> Result<Tool
     .confidence(Confidence::Derived)
     .authority(Authority::Reasoning)
     .limitations(lims)
-    .coverage(if unlisted.is_empty() {
+    .coverage(if unlisted.is_empty() && !cut {
         Coverage::complete(considered as u64)
     } else {
         Coverage { status: CoverageStatus::Partial, examined: Some(considered as u64), total: None, next_offset: None }
@@ -1163,6 +1172,22 @@ mod tests {
         assert_ne!(cut["result"]["counts"]["missing"], 0, "what the closed folder declares reads as missing: {cut}");
         assert_names_unlisted(&cut, "closed");
         assert!(cut["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "source_read"), "{cut}");
+    }
+
+    /// A read cut at the file budget is a partial check: members declared only in an unread file
+    /// are missing, not the whole story.
+    #[test]
+    fn a_cut_source_read_is_partial_and_names_the_cut() {
+        let e = Engine::new(crate::testing::session());
+        let asm = craft_anything_testkit::temp_file("Sample.dll", &fx::managed_assembly(1));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("A.cs"), "namespace A { class Empty { } }\n").unwrap();
+        std::fs::write(dir.path().join("B.cs"), fx::RECONSTRUCTION_CS).unwrap();
+        let r = call(&e, "managed_reconstruction_check", json!({"members": asm, "source_path": dir.path(), "max_files": 1}));
+        assert_eq!(r["result"]["source_files"], json!(["A.cs"]), "only the first file was read: {r}");
+        assert_ne!(r["result"]["counts"]["missing"], 0, "the unread file's members read as missing: {r}");
+        assert_eq!(r["coverage"]["status"], "partial", "a cut read is not a complete check: {r}");
+        assert!(r["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "source_files_cut"), "{r}");
     }
 
     /// When the only source is in a folder that can't be listed, "no .cs files" alone sent the
