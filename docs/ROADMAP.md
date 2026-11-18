@@ -2262,6 +2262,7 @@ Owner: open · Status: in progress
       in a note, but its coverage stays complete, so members declared only in an unread file read as
       missing in a complete check (CodeRabbit on #2106): carry the cut into coverage, apart from the
       unlisted-folder limitation
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.11-managed-check-coverage
 - [ ] `js_sources_restore` keeps every unlisted folder of every input in memory to name five of them:
       keep the count and the first five (CodeRabbit on #2106)
       — claimed: hichang4u, branch bugfix/r3.11-walk-gaps-named
