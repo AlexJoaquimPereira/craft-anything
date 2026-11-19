@@ -34,6 +34,8 @@ pub static LANGUAGES: &[LangInfo] = &[
     LangInfo { code: "vi", name: "Tiếng Việt", source: include_str!("i18n/vi.tsv") },
     LangInfo { code: "pt-br", name: "Português (Brasil)", source: include_str!("i18n/pt-br.tsv") },
     LangInfo { code: "tr", name: "Türkçe", source: include_str!("i18n/tr.tsv") },
+    LangInfo { code: "th", name: "ไทย", source: include_str!("i18n/th.tsv") },
+    LangInfo { code: "et", name: "Eesti", source: include_str!("i18n/et.tsv") },
 ];
 
 /// Match a locale to a registered UI language. An explicit script wins over the region.
@@ -115,13 +117,11 @@ pub fn tr(s: &str) -> String {
     }
 }
 
-/// Translate, then fill `{name}` placeholders.
+/// Translate, then fill `{name}` placeholders in one pass (`platform::text::fill`), so an inserted
+/// value stays literal even when it looks like a placeholder.
 pub fn trf(s: &str, args: &[(&str, &str)]) -> String {
-    let mut out = tr(s);
-    for (k, v) in args {
-        out = out.replace(&format!("{{{k}}}"), v);
-    }
-    out
+    let template = tr(s);
+    if template.contains('{') { craft_anything_platform::text::fill(&template, args) } else { template }
 }
 
 #[cfg(test)]
@@ -134,7 +134,9 @@ mod tests {
         assert_eq!(m.get("Hello").map(String::as_str), Some("Hola"));
         assert!(!m.contains_key("Empty"));
         assert_eq!(trf("Open {name}", &[("name", "a.exe")]), "Open a.exe");
+        assert_eq!(trf("{a} {b}", &[("a", "{b}"), ("b", "x")]), "{b} x");
         assert_eq!(tr("Untranslated"), "Untranslated");
+        assert_eq!(trf("Untranslated", &[("a", "1")]), "Untranslated");
     }
 
     /// Script and region matching: an explicit script wins over a region, a registered language
@@ -161,6 +163,8 @@ mod tests {
         assert_eq!(language_from_tag("pt_BR.UTF-8"), Some("pt-br"));
         assert_eq!(language_from_tag("pt-PT"), Some("pt-br"));
         assert_eq!(language_from_tag("tr-TR"), Some("tr"));
+        assert_eq!(language_from_tag("th-TH"), Some("th"));
+        assert_eq!(language_from_tag("th_TH.UTF-8"), Some("th"));
         assert_eq!(preferred_language(["de-DE", "zh-HK"]), "de");
         assert_eq!(preferred_language(["sv-SE", "vi-VN", "en-US"]), "vi");
         assert_eq!(preferred_language(["en-US", "zh-CN"]), "en");
@@ -178,8 +182,9 @@ mod tests {
             out
         }
         let mut catalogs = Vec::new();
-        for lang in
-            LANGUAGES.iter().filter(|l| matches!(l.code, "zh-hans" | "zh-hant" | "ru" | "ko" | "cs" | "de" | "ka" | "es" | "it" | "vi" | "pt-br" | "tr"))
+        for lang in LANGUAGES
+            .iter()
+            .filter(|l| matches!(l.code, "zh-hans" | "zh-hant" | "ru" | "ko" | "cs" | "de" | "ka" | "es" | "it" | "vi" | "pt-br" | "tr" | "th" | "et"))
         {
             let mut keys = std::collections::BTreeSet::new();
             for (i, line) in lang.source.lines().enumerate() {

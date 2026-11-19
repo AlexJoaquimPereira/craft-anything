@@ -14,7 +14,7 @@
 <h1 align="center">Craft Anything</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>日本語</b> · <a href="README.zh.md">简体中文</a> · <a href="README.zh-hant.md">繁體中文</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.vi.md">Tiếng Việt</a> · <a href="README.pt.md">Português</a>
+  <a href="README.md">English</a> · <b>日本語</b> · <a href="README.zh.md">简体中文</a> · <a href="README.zh-hant.md">繁體中文</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.vi.md">Tiếng Việt</a> · <a href="README.pt.md">Português</a> · <a href="README.th.md">ไทย</a> · <a href="README.tr.md">Türkçe</a>
 </p>
 
 <p align="center">
@@ -169,7 +169,7 @@ craft-anything-cli rebuild https://example.com "Recreate this website"
 Rust **1.97 以降**が必要です (依存関係が要求します。`rustup update`)。Debian か Ubuntu では、デスクトップアプリには次のものも必要です:
 
 ```sh
-sudo apt-get install libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+sudo apt-get install build-essential libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
 ```
 
 続いて:
@@ -264,6 +264,27 @@ mv "craft-anything-cli-$ver-macos-universal/craft-anything-cli" ~/.local/bin/
 `xattr -d com.apple.quarantine <craft-anything-cli のパス>` を実行するか、システム設定 →
 プライバシーとセキュリティ → このまま開く で許可してください。
 
+#### Mac のダウンロードが署名・公証されているか確認する
+
+Mac 版は Developer ID 証明書で署名され、Apple の公証を受けています。自分で確認するには、ターミナルで次を実行します(`<ver>` はバージョン、パスは自分のものに置き換えてください):
+
+```sh
+# ディスクイメージ: "accepted" と "source=Notarized Developer ID" なら合格
+spctl --assess --type open --context context:primary-signature -v "craft-anything-<ver>-macos-universal.dmg"
+# 公証チケットが添付されている: "The validate action worked!" と表示される
+xcrun stapler validate "craft-anything-<ver>-macos-universal.dmg"
+
+# アプリ(ディスクイメージを開いた後): 署名が検証されること
+codesign --verify --deep --strict --verbose=2 "/Volumes/<disk image name>/Craft Anything.app"
+spctl --assess --type execute --verbose "/Volumes/<disk image name>/Craft Anything.app"
+
+# コマンドラインツール: 単体のプログラムはチケットを添付できないため、macOS がオンラインで確認します
+codesign --verify --strict --verbose=2 ~/.local/bin/craft-anything-cli
+codesign -dv --verbose=4 ~/.local/bin/craft-anything-cli 2>&1 | grep Authority
+```
+
+`Authority` の行に "Developer ID Application" 証明書が出れば正しい状態です。確認に失敗したファイルは実行せず、出力とリリースのタグを添えて報告してください。
+
 ### Linux
 
 | 形式 | x86_64 | aarch64 (ARM64) | 備考 |
@@ -337,7 +358,7 @@ RISC-V (riscv64): `craft-anything-<ver>-linux-riscv64.tar.gz`、tarball のみ�
 
 ## ライセンスとクレジット
 
-Craft Anything は [MIT](LICENSE-MIT) または [Apache-2.0](LICENSE-APACHE) のデュアルライセンスです (どちらかお選びください)。Copyright (c) 2026 ArtCraft Team and the Craft Anything contributors. 必要な通知は [NOTICE](NOTICE) にあります。
+Craft Anything は [MIT](LICENSE-MIT) または [Apache-2.0](LICENSE-APACHE) のデュアルライセンスです (どちらかお選びください)。Copyright (c) 2026 ArtCraft Team and the Craft Anything contributors ([CONTRIBUTORS.md](CONTRIBUTORS.md)). 必要な通知は [NOTICE](NOTICE) にあります。
 
 同梱のフォント、アイコン、画像、その他のアセットは、それぞれ独自のオープンライセンスが適用されます。各アセットの作者、出典、ライセンスは [ATTRIBUTION.md](ATTRIBUTION.md) に記載しています。
 
