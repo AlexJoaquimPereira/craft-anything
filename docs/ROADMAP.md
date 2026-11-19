@@ -2331,6 +2331,10 @@ Owner: open · Status: in progress
       file and drop an earlier one; relative paths, folders, links and unlisted names are still
       shown lossily
       — claimed: AlexJoaquimPereira, branch bugfix/r3.11-walk-raw-names
+- [ ] A folder inventory re-sorts the walk's folders, links and files by their displayed paths, so
+      a `max_entries` cut can keep the display-first file where the walk's raw order keeps an
+      earlier one: give its entries the same raw identities the walk now uses (follow-up to the
+      walk's raw order)
 
 ### R3.12 Format parser correctness
 Owner: open · Status: in progress
