@@ -323,6 +323,13 @@ fn an_ssh_agent_check_names_the_command_to_run() {
     let not_executable = remote_check_outcome("pi5", "/opt/claude", Ok(not_executable)).unwrap_err();
     assert!(not_executable.message.contains("couldn't be run"), "{}", not_executable.message);
     assert!(not_executable.remediation.unwrap().contains("executable"));
+    let wrong_format = craft_anything_platform::Output {
+        stderr: b"/bin/sh: 1: /opt/claude: Exec format error\n".to_vec(),
+        stderr_tail: b"/bin/sh: 1: /opt/claude: Exec format error\n".to_vec(),
+        ..out(Some(126))
+    };
+    let wrong_format = remote_check_outcome("pi5", "/opt/claude", Ok(wrong_format)).unwrap_err();
+    assert!(wrong_format.message.contains("couldn't be run"), "{}", wrong_format.message);
     let own_126 = craft_anything_platform::Output { stderr: b"claude: bad option\n".to_vec(), stderr_tail: b"claude: bad option\n".to_vec(), ..out(Some(126)) };
     assert!(remote_check_outcome("pi5", "claude", Ok(own_126)).is_ok(), "the program itself exited 126");
     // ssh's own failures say what to fix, and show ssh's message rather than guessing.
