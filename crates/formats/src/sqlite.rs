@@ -299,21 +299,7 @@ fn read_u16_be(data: &[u8], off: usize) -> Option<u16> {
 
 /// A SQLite big-endian varint (up to 9 bytes): (value, bytes consumed).
 fn varint(data: &[u8], off: usize) -> Option<(u64, usize)> {
-    let mut result: u64 = 0;
-    let mut i = 0usize;
-    while i < 9 {
-        let b = *data.get(off.checked_add(i)?)?;
-        if i == 8 {
-            result = (result << 8) | u64::from(b);
-            return Some((result, 9));
-        }
-        result = (result << 7) | u64::from(b & 0x7f);
-        if b & 0x80 == 0 {
-            return Some((result, i + 1));
-        }
-        i += 1;
-    }
-    None
+    craft_sqlite::read_varint(data.get(off..)?).ok()
 }
 
 fn version_string(n: u32) -> String {
@@ -876,12 +862,9 @@ fn parse_record(payload: &[u8], text_encoding: &str, text_cap: usize) -> Vec<Cel
 
 /// Decode one serial-typed value at `off`; returns the value and its byte size.
 fn decode_serial(serial: u64, data: &[u8], off: usize, text_encoding: &str, text_cap: usize) -> (CellValue, usize) {
-    let size = match serial {
-        1..=4 => serial as usize,
-        5 => 6,
-        6 | 7 => 8,
-        n if n >= 12 => usize::try_from((n - 12) / 2).unwrap_or(usize::MAX),
-        _ => 0,
+    let size = match craft_sqlite::serial_type_len(serial) {
+        Ok(len) => usize::try_from(len).unwrap_or(usize::MAX),
+        Err(_) => 0,
     };
     if off > data.len() || (off == data.len() && size != 0) {
         return (CellValue::NotRead, size);
@@ -2272,8 +2255,11 @@ mod tests {
         assert_eq!(varint(&[0x00], 0), Some((0, 1)));
         assert_eq!(varint(&[0x7f], 0), Some((127, 1)));
         assert_eq!(varint(&[0x81, 0x00], 0), Some((128, 2)));
-        assert_eq!(varint(&[0xff; 9], 0).map(|(_, n)| n), Some(9));
+        assert_eq!(varint(&[0xff; 9], 0), Some((u64::MAX, 9)));
+        assert_eq!(varint(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01], 0), Some((1, 9)));
+        assert_eq!(varint(&[0x80; 8], 0), None);
         assert_eq!(varint(&[0x80], 0), None); // never terminates within range
+        assert_eq!(varint(&[], 1), None);
     }
 
     #[test]
@@ -2667,6 +2653,14 @@ mod tests {
             CellValue::Blob { len, .. } => assert_eq!(len, 3),
             other => panic!("expected blob, got {other:?}"),
         }
+        // 6-byte signed integer, 8-byte signed integer, 8-byte float, and reserved serial types 10/11.
+        assert_eq!(decode_serial(5, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xfe], 0, "utf-8", MAX_TEXT), (CellValue::Int(-2), 6));
+        assert_eq!(decode_serial(6, &(-42_i64).to_be_bytes(), 0, "utf-8", MAX_TEXT), (CellValue::Int(-42), 8));
+        assert_eq!(decode_serial(7, &3.5_f64.to_be_bytes(), 0, "utf-8", MAX_TEXT), (CellValue::Real(3.5), 8));
+        assert_eq!(decode_serial(10, &[], 0, "utf-8", MAX_TEXT), (CellValue::Null, 0));
+        assert_eq!(decode_serial(11, &[], 0, "utf-8", MAX_TEXT), (CellValue::Null, 0));
+        assert_eq!(craft_sqlite::serial_type_len(10), Err(craft_sqlite::Error::ReservedSerialType(10)));
+        assert_eq!(craft_sqlite::serial_type_len(11), Err(craft_sqlite::Error::ReservedSerialType(11)));
     }
 
     fn text(value: &str) -> CellValue {
