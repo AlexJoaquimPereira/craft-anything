@@ -224,6 +224,49 @@ fn an_ssh_agent_is_checked_before_it_is_added() {
     assert!(!checked, "a local agent needs no remote check");
 }
 
+/// A host that ssh would read as an option, or an alias that leads to a git server, is refused
+/// before any ssh run: the person typed it, and neither can run an agent.
+#[test]
+fn an_ssh_host_that_looks_like_an_option_or_names_a_git_server_is_refused() {
+    let (h, _d) = hub();
+    let config = |name: &str, host: &str| BackendConfig {
+        name: name.into(),
+        kind: BackendKind::AgentCli,
+        model: "claude-code".into(),
+        base_url: None,
+        ssh_host: Some(host.into()),
+        enabled: true,
+    };
+    let mut checked = false;
+    let dash = h
+        .add_backend_with_check(
+            BackendEntry { config: config("Dash", "-oProxyCommand=touch /tmp/craft-anything-ssh-test"), options: BackendOptions::default() },
+            None,
+            &CancelToken::default(),
+            |_, _, _| {
+                checked = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(dash.message.contains("can't begin with a '-'"), "{}", dash.message);
+    assert!(!checked, "the host never reaches ssh");
+    assert!(crate::ssh::is_git_server("github.com"), "the fixture names a git server");
+    let git = h
+        .add_backend_with_check(
+            BackendEntry { config: config("Git server", "github.com"), options: BackendOptions::default() },
+            None,
+            &CancelToken::default(),
+            |_, _, _| {
+                checked = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(git.message.contains("git server"), "{}", git.message);
+    assert!(!checked, "a git alias never reaches ssh");
+}
+
 /// A Connect job cancelled during the remote check saves nothing.
 #[test]
 fn a_cancelled_connect_does_not_save_an_ssh_agent() {
@@ -264,12 +307,61 @@ fn an_ssh_agent_check_names_the_command_to_run() {
     assert!(remote_check_outcome("pi5", "claude", Ok(out(Some(0)))).is_ok());
     let missing = remote_check_outcome("pi5", "claude", Ok(out(Some(127)))).unwrap_err();
     assert_eq!(missing.code, ErrorCode::EngineMissing);
-    assert!(missing.message.contains("claude isn't installed on pi5"), "{}", missing.message);
-    assert!(missing.remediation.unwrap().contains("ssh -o BatchMode=yes -T pi5 -- claude --version"));
+    assert!(missing.message.contains("claude wasn't found on pi5"), "{}", missing.message);
+    assert!(missing.remediation.unwrap().contains("Install it there"));
+    // A program that ran and exited non-zero is installed: a `--version` may exit 1 or 126.
+    for code in [1, 126] {
+        assert!(remote_check_outcome("pi5", "claude", Ok(out(Some(code)))).is_ok(), "exit {code} isn't a missing agent");
+    }
+    // ssh's own failures say what to fix, and show ssh's message rather than guessing.
+    let refused = craft_anything_platform::Output {
+        stderr: b"me@pi5: Permission denied (publickey).\n".to_vec(),
+        stderr_tail: b"me@pi5: Permission denied (publickey).\n".to_vec(),
+        ..out(Some(255))
+    };
+    let refused = remote_check_outcome("pi5", "claude", Ok(refused)).unwrap_err();
+    assert!(refused.message.contains("login was refused"), "{}", refused.message);
+    assert!(refused.remediation.unwrap().contains("ssh key"));
     let unreachable = remote_check_outcome("pi5", "claude", Ok(out(Some(255)))).unwrap_err();
     assert!(unreachable.message.contains("Couldn't reach pi5"), "a connection failure isn't read as a missing agent: {}", unreachable.message);
     let timed_out = remote_check_outcome("pi5", "claude", Err(ToolError::new(ErrorCode::TimedOut, "timed out"))).unwrap_err();
     assert!(timed_out.remediation.unwrap().contains("didn't answer within 15 seconds"));
+    // A missing local ssh keeps the platform's own remediation; the remote host isn't the fault.
+    let missing_ssh = remote_check_outcome(
+        "pi5",
+        "claude",
+        Err(ToolError::new(ErrorCode::EngineMissing, "ssh isn't installed or isn't on your PATH.").with_remediation("Install OpenSSH.")),
+    )
+    .unwrap_err();
+    assert_eq!(missing_ssh.remediation.as_deref(), Some("Install OpenSSH."));
+}
+
+/// The check itself runs the ssh program it is given, so its wiring is covered with a stand-in
+/// for ssh: its exit status and message are what the person's error is built from.
+#[cfg(unix)]
+#[test]
+fn the_remote_check_runs_the_ssh_program_and_reads_its_exit() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = |name: &str, code: i32, message: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' {} >&2\nexit {code}\n", crate::ssh::shell_quote(message))).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    assert!(crate::verify_remote_agent_with(&ssh("ok", 0, ""), "pi5", "claude", &CancelToken::default()).is_ok());
+    let missing = crate::verify_remote_agent_with(&ssh("missing", 127, "sh: claude: command not found"), "pi5", "claude", &CancelToken::default()).unwrap_err();
+    assert!(missing.message.contains("claude wasn't found on pi5"), "{}", missing.message);
+    let refused =
+        crate::verify_remote_agent_with(&ssh("refused", 255, "me@pi5: Permission denied (publickey)."), "pi5", "claude", &CancelToken::default()).unwrap_err();
+    assert!(refused.message.contains("login was refused"), "{}", refused.message);
+    let installed = crate::verify_remote_agent_with(&ssh("version-failed", 1, "claude: unknown option"), "pi5", "claude", &CancelToken::default());
+    assert!(installed.is_ok(), "a program that ran and exited 1 is installed");
+    // A missing program on this computer isn't blamed on the remote host.
+    let no_ssh = crate::verify_remote_agent_with(std::path::Path::new("definitely-not-ssh-xyz"), "pi5", "claude", &CancelToken::default()).unwrap_err();
+    assert_eq!(no_ssh.code, ErrorCode::EngineMissing);
+    assert!(no_ssh.message.contains("definitely-not-ssh-xyz"), "{}", no_ssh.message);
+    assert!(!no_ssh.remediation.unwrap_or_default().contains("remote host"), "the local install remediation is kept");
 }
 
 /// #48: a coding agent's test only runs `--version`, and its report says so.

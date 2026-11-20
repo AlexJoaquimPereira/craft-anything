@@ -339,6 +339,9 @@ impl CraftApp {
     /// Run an agent app from this program (`None`: find it by its usual name again).
     pub fn set_agent_program(&mut self, name: &str, program: Option<String>) {
         self.agent_model_picker = None;
+        // The suggestion field caches what was typed by backend name. A new program means that
+        // cached command is stale: drop it so the field reloads the saved command.
+        self.state.remote_commands.remove(name);
         let (hub, name) = (self.hub.clone(), name.to_string());
         self.jobs.spawn(tr("Set an AI's program"), false, move |_| {
             hub.set_command(&name, program.as_deref()).map_err(|e| e.message)?;

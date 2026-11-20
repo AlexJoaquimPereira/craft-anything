@@ -42,7 +42,7 @@ use craft_anything_engine::{CancelToken, Engine, Settings};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -69,9 +69,14 @@ pub fn models_to_choose(e: &ToolError) -> Vec<String> {
 /// Check that `program` is installed on `host` before an agent for it is saved. A host from
 /// `~/.ssh/config` is only a suggestion (#62).
 fn verify_remote_agent(host: &str, program: &str, cancel: &CancelToken) -> Result<(), ToolError> {
+    verify_remote_agent_with(Path::new("ssh"), host, program, cancel)
+}
+
+/// [`verify_remote_agent`] with the ssh program named, so a test can stand in for it.
+fn verify_remote_agent_with(ssh: &Path, host: &str, program: &str, cancel: &CancelToken) -> Result<(), ToolError> {
     let ask = [program.to_string(), "--version".to_string()];
     let stop = cancel.clone();
-    let process = craft_anything_platform::process::Process::new("ssh")
+    let process = craft_anything_platform::process::Process::new(ssh)
         .args(crate::ssh::ssh_args(host, &ask))
         .timeout(SSH_AGENT_CHECK_WAIT)
         .stdout_cap(64 * 1024)
@@ -80,21 +85,48 @@ fn verify_remote_agent(host: &str, program: &str, cancel: &CancelToken) -> Resul
     remote_check_outcome(host, program, process.run())
 }
 
+/// The error a person can act on for a diagnosed ssh failure.
+fn ssh_failure(failure: crate::ssh::SshFailure) -> ToolError {
+    ToolError::new(ErrorCode::EngineMissing, failure.what).with_remediation(failure.fix)
+}
+
 /// Turn the remote check's run into the error a person can act on.
 fn remote_check_outcome(host: &str, program: &str, out: Result<craft_anything_platform::Output, ToolError>) -> Result<(), ToolError> {
     let check = crate::ssh::check_command(host, program);
     match out {
         Ok(o) if o.code == Some(0) => Ok(()),
-        // ssh's own exit for a connection that didn't happen: "not installed" would be a guess.
-        Ok(o) if o.code == Some(255) => Err(ToolError::new(ErrorCode::EngineMissing, format!("Couldn't reach {host} to check for {program}."))
-            .with_remediation(format!("Check that this computer can ssh to {host}, then run `{check}`. Pick another host, or add an AI from this computer."))),
-        Ok(_) => Err(ToolError::new(ErrorCode::EngineMissing, format!("{program} isn't installed on {host}."))
-            .with_remediation(format!("Install it there, or run `{check}` to check. Pick another host, or add an AI from this computer."))),
+        Ok(o) => {
+            let said = o.stderr_end_text();
+            // ssh's own exit codes and messages: a connection that didn't happen isn't a missing
+            // agent, and a refused key or untrusted host key says what to fix.
+            if let Some(failure) = crate::ssh::diagnose(host, program, crate::ssh::is_git_server(host), o.code, &said) {
+                return Err(ssh_failure(failure));
+            }
+            // ssh's own exit for a connection that didn't happen: "not installed" would be a
+            // guess. Show what it said when it said anything.
+            if o.code == Some(255) {
+                let reason = said.lines().rev().find(|line| !line.trim().is_empty()).map(str::trim).unwrap_or("");
+                let message = if reason.is_empty() {
+                    format!("Couldn't reach {host} to check for {program}.")
+                } else {
+                    format!("Couldn't reach {host} to check for {program}: {reason}")
+                };
+                return Err(ToolError::new(ErrorCode::EngineMissing, message).with_remediation(format!(
+                    "Check that this computer can ssh to {host}, then run `{check}`. Pick another host, or add an AI from this computer."
+                )));
+            }
+            // The program ran, so it is installed: a `--version` that exits 1 or 126 is not a
+            // missing program.
+            Ok(())
+        }
         Err(e) if e.code == ErrorCode::Cancelled => Err(e),
         Err(e) if e.code == ErrorCode::TimedOut => Err(e.with_remediation(format!(
             "The check `{check}` didn't answer within {} seconds. Check that this computer can reach {host}, then try again.",
             SSH_AGENT_CHECK_WAIT.as_secs()
         ))),
+        // A missing ssh on this computer keeps the platform's "isn't installed" remediation: the
+        // remote host isn't the problem.
+        Err(e) if e.code == ErrorCode::EngineMissing => Err(e),
         Err(e) => {
             Err(e.with_remediation(format!("The check `{check}` failed. Check that this computer can reach {host} and that {program} is installed there.")))
         }
@@ -783,7 +815,19 @@ impl AiHub {
         if entry.config.kind == BackendKind::AgentCli
             && let Some(host) = entry.config.ssh_host.as_deref()
         {
+            // ssh reads the host before `--`, so a leading `-` would be one of its options.
+            if host.starts_with('-') {
+                return Err(ToolError::invalid("An SSH host can't begin with a '-'.")
+                    .with_remediation("Enter the computer's name or address as it is in ~/.ssh/config."));
+            }
             let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
+            // A git server alias is never a computer that can run the agent, even when it is
+            // typed rather than picked from the detected list.
+            if crate::ssh::is_git_server(host)
+                && let Some(failure) = crate::ssh::diagnose(host, &program, true, None, "")
+            {
+                return Err(ssh_failure(failure));
+            }
             check(host, &program, cancel)?;
         }
         // A Connect job cancelled during the check leaves nothing behind. After this, the save is
