@@ -97,8 +97,9 @@ pub fn diagnose(host: &str, program: &str, git_server: bool, code: Option<i32>, 
         }),
         Some(NOT_EXECUTABLE) => {
             let text = stderr.to_ascii_lowercase();
-            let launch_failed =
-                ["permission denied", "cannot execute", "not executable", "is a directory", "text file busy"].iter().any(|needle| text.contains(needle));
+            let launch_failed = ["permission denied", "cannot execute", "not executable", "is a directory", "text file busy", "exec format error"]
+                .iter()
+                .any(|needle| text.contains(needle));
             launch_failed.then(|| SshFailure {
                 what: format!("{program} was found on {host} but couldn't be run"),
                 fix: format!(
@@ -325,6 +326,8 @@ mod tests {
         let not_executable = diagnose("gpu", "/opt/claude", false, Some(126), "/opt/claude: Permission denied").unwrap();
         assert!(not_executable.what.contains("couldn't be run"), "{}", not_executable.what);
         assert!(not_executable.fix.contains("executable"));
+        let wrong_format = diagnose("gpu", "/opt/claude", false, Some(126), "/bin/sh: 1: /opt/claude: Exec format error").unwrap();
+        assert!(wrong_format.what.contains("couldn't be run"), "{}", wrong_format.what);
         // The remote program's own 126 failure, or ssh's unknown one, isn't guessed at.
         assert!(diagnose("gpu", "claude", false, Some(126), "claude: bad option").is_none());
         assert!(diagnose("gpu", "claude", false, Some(1), "Permission denied").is_none());
