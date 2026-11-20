@@ -98,27 +98,111 @@ pub fn get(name: &str) -> Option<&'static Toolchain> {
     catalogue().iter().find(|t| t.name == name)
 }
 
+/// What a source scan established: a source file was found, the scan completed with none, or it
+/// couldn't finish (a folder or entry couldn't be read), so "none" isn't known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceScan {
+    Found,
+    None,
+    Unknown,
+}
+
 /// The first toolchain whose marker and source files show a project that can be built here: the
 /// marker says what it is, the sources say there is something to build. A leftover Cargo.toml
 /// without Rust sources isn't one. A script-only Python project counts from its root entrypoint.
 pub fn built_in(dir: &Path) -> Option<&'static Toolchain> {
+    // Every marker-backed toolchain first; a script-only project only after them, so a stray
+    // root entrypoint can't beat a Go, .NET, Maven or Gradle manifest listed later.
     catalogue()
         .iter()
-        .find(|t| built_in_one(t, dir))
-        .or_else(|| catalogue().iter().find(|t| t.standalone_entrypoints && root_entrypoint(dir, t) && sources_present(t, dir)))
+        .find(|t| marker_scan(t, dir) == SourceScan::Found)
+        .or_else(|| catalogue().iter().find(|t| t.standalone_entrypoints && root_entrypoint(dir, t) && sources_present(t, dir) == SourceScan::Found))
 }
 
 /// Whether `name`'s toolchain has its marker and source files here.
 pub fn built_in_named(dir: &Path, name: &str) -> bool {
-    get(name).is_some_and(|t| built_in_one(t, dir) || (t.standalone_entrypoints && root_entrypoint(dir, t) && sources_present(t, dir)))
+    built_in_named_scan(dir, name) == SourceScan::Found
 }
 
-fn built_in_one(tool: &Toolchain, dir: &Path) -> bool {
-    tool.found_by.iter().any(|pattern| !matching_files(dir, pattern).is_empty()) && sources_present(tool, dir)
+/// The full answer for `name`: found, completed with none, or unknown because the scan couldn't
+/// finish. Callers that must not replace a recorded choice use [`SourceScan::Unknown`] as such.
+pub fn built_in_named_scan(dir: &Path, name: &str) -> SourceScan {
+    let Some(tool) = get(name) else { return SourceScan::None };
+    let by_marker = marker_scan(tool, dir);
+    if by_marker == SourceScan::Found {
+        return SourceScan::Found;
+    }
+    if tool.standalone_entrypoints && root_entrypoint(dir, tool) {
+        let by_root = sources_present(tool, dir);
+        return if by_root == SourceScan::Found { SourceScan::Found } else { by_root };
+    }
+    by_marker
 }
 
-fn sources_present(tool: &Toolchain, dir: &Path) -> bool {
-    tool.sources.is_empty() || tool.sources.iter().any(|pattern| has_source_file(dir, pattern, &tool.output_dirs))
+/// The marker-and-sources answer for one toolchain, without its script-only entrypoint fallback.
+fn marker_scan(tool: &Toolchain, dir: &Path) -> SourceScan {
+    let mut unknown = false;
+    for pattern in &tool.found_by {
+        match marker_present(dir, pattern) {
+            SourceScan::Found => return sources_present(tool, dir),
+            SourceScan::Unknown => unknown = true,
+            SourceScan::None => {}
+        }
+    }
+    if unknown { SourceScan::Unknown } else { SourceScan::None }
+}
+
+/// Whether a marker pattern names a file here. An enumeration that couldn't finish is Unknown,
+/// not a confirmed absence; launch detection keeps its separate uniqueness rule.
+fn marker_present(dir: &Path, pattern: &str) -> SourceScan {
+    if let Some((folder, filename)) = pattern.split_once("*/") {
+        let (files, complete) = scan_entries_with_completeness(&dir.join(folder), |entry| {
+            let file = entry.path().join(filename);
+            Ok((entry.file_type()?.is_dir() && file.is_file()).then_some(file))
+        });
+        return if !files.is_empty() {
+            SourceScan::Found
+        } else if complete {
+            SourceScan::None
+        } else {
+            SourceScan::Unknown
+        };
+    }
+    let (folder, name) = pattern.rsplit_once('/').unwrap_or(("", pattern));
+    if let Some(suffix) = name.strip_prefix('*') {
+        let (files, complete) = scan_entries_with_completeness(&dir.join(folder), |entry| {
+            let file = entry.path();
+            Ok((entry.file_name().to_string_lossy().ends_with(suffix) && file.is_file()).then_some(file))
+        });
+        return if !files.is_empty() {
+            SourceScan::Found
+        } else if complete {
+            SourceScan::None
+        } else {
+            SourceScan::Unknown
+        };
+    }
+    match std::fs::metadata(dir.join(pattern)) {
+        Ok(meta) if meta.is_file() => SourceScan::Found,
+        Ok(_) => SourceScan::None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SourceScan::None,
+        Err(_) => SourceScan::Unknown,
+    }
+}
+
+fn sources_present(tool: &Toolchain, dir: &Path) -> SourceScan {
+    if tool.sources.is_empty() {
+        return SourceScan::Found;
+    }
+    let mut unknown = false;
+    for pattern in &tool.sources {
+        match has_source_file(dir, pattern, &tool.output_dirs) {
+            SourceScan::Found => return SourceScan::Found,
+            SourceScan::Unknown => unknown = true,
+            SourceScan::None => {}
+        }
+    }
+    if unknown { SourceScan::Unknown } else { SourceScan::None }
 }
 
 fn root_entrypoint(dir: &Path, tool: &Toolchain) -> bool {
@@ -133,31 +217,60 @@ const SOURCE_SKIPPED: &[&str] = &["target", "node_modules", ".git", ".venv", "ve
 
 /// Whether a file ending in `pattern`'s suffix exists below `dir`, skipping build output. The
 /// toolchain's own `output_dirs` are skipped too; a Rust package's `src/bin` is source, not output.
-fn has_source_file(dir: &Path, pattern: &str, output_dirs: &[String]) -> bool {
+/// A folder or entry that can't be read, or the scan cap, makes the answer unknown rather than
+/// "no sources".
+fn has_source_file(dir: &Path, pattern: &str, output_dirs: &[String]) -> SourceScan {
     let suffix = pattern.strip_prefix('*').unwrap_or(pattern);
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     let mut seen = 0usize;
+    let mut unknown = false;
     while let Some((folder, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
-        for entry in entries.flatten() {
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            // Keep walking: another folder may still hold a source file.
+            Err(_) => {
+                unknown = true;
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    unknown = true;
+                    continue;
+                }
+            };
             seen += 1;
             if seen > SOURCE_SCAN_FILES {
-                return false;
+                return SourceScan::Unknown;
             }
-            let Ok(kind) = entry.file_type() else { continue };
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(_) => {
+                    unknown = true;
+                    continue;
+                }
+            };
             if kind.is_dir() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 let name = name.as_ref();
-                if depth < SOURCE_SCAN_DEPTH && !SOURCE_SKIPPED.contains(&name) && !output_dirs.iter().any(|d| d.as_str() == name) {
-                    stack.push((entry.path(), depth + 1));
+                let excluded = SOURCE_SKIPPED.contains(&name) || output_dirs.iter().any(|d| d.as_str() == name);
+                if depth < SOURCE_SCAN_DEPTH {
+                    if !excluded {
+                        stack.push((entry.path(), depth + 1));
+                    }
+                } else if !excluded {
+                    // A source could be inside a folder past the depth limit.
+                    unknown = true;
                 }
             } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(suffix) {
-                return true;
+                return SourceScan::Found;
             }
         }
     }
-    false
+    if unknown { SourceScan::Unknown } else { SourceScan::None }
 }
 
 /// Match exact files, suffixes in a fixed directory (`*.csproj`, `target/*.jar`), or one named
@@ -181,18 +294,30 @@ fn matching_files(dir: &Path, pattern: &str) -> Vec<PathBuf> {
 }
 
 fn scan_entries(dir: &Path, candidate: impl Fn(std::fs::DirEntry) -> std::io::Result<Option<PathBuf>>) -> Vec<PathBuf> {
+    let (files, complete) = scan_entries_with_completeness(dir, candidate);
+    // A partial scan cannot establish that the entrypoint is unique.
+    if complete { files } else { Vec::new() }
+}
+
+/// The entries a candidate accepted, and whether the folder was enumerated completely. A marker
+/// only needs presence, so it can use the partial list as confirmation rather than discarding it.
+fn scan_entries_with_completeness(dir: &Path, candidate: impl Fn(std::fs::DirEntry) -> std::io::Result<Option<PathBuf>>) -> (Vec<PathBuf>, bool) {
     let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return files };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // A missing folder is a confirmed absence; any other failure is an incomplete scan.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (files, true),
+        Err(_) => return (files, false),
+    };
     for (i, entry) in entries.enumerate() {
-        // A partial scan cannot establish that the entrypoint is unique.
         if i >= 256 {
-            return Vec::new();
+            return (files, false);
         }
-        let Ok(file) = entry.and_then(&candidate) else { return Vec::new() };
+        let Ok(file) = entry.and_then(&candidate) else { return (files, false) };
         files.extend(file);
     }
     files.sort();
-    files
+    (files, true)
 }
 
 impl Toolchain {
@@ -444,6 +569,65 @@ mod tests {
             std::fs::write(dir.path().join(marker), "").unwrap();
             assert_eq!(found_in(dir.path()).unwrap().name, name);
         }
+    }
+
+    /// A script-only entrypoint is checked after every marker-backed toolchain, so a stray
+    /// `main.py` can't hide a Go, .NET, Maven or Gradle manifest.
+    #[test]
+    fn a_standalone_entrypoint_does_not_beat_a_later_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.py"), "").unwrap();
+        std::fs::write(dir.path().join("go.mod"), "").unwrap();
+        std::fs::write(dir.path().join("main.go"), "").unwrap();
+        assert_eq!(built_in(dir.path()).map(|t| t.name.as_str()), Some("Go"));
+    }
+
+    /// A missing marker folder is a confirmed absence, not an incomplete scan.
+    #[test]
+    fn a_missing_marker_folder_is_confirmed_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(marker_present(dir.path(), "missing/*.csproj"), SourceScan::None);
+    }
+
+    /// A marker folder that couldn't be enumerated completely is unknown, not absent.
+    #[test]
+    fn an_incomplete_marker_enumeration_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..257 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "").unwrap();
+        }
+        assert_eq!(marker_present(dir.path(), "*.csproj"), SourceScan::Unknown);
+    }
+
+    /// A folder past the depth limit could hold the source, so the scan is unknown rather than
+    /// a completed "none".
+    #[test]
+    fn a_folder_past_the_depth_limit_makes_the_scan_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b/c/d/e/f/g")).unwrap();
+        assert_eq!(built_in_named_scan(dir.path(), "Python"), SourceScan::Unknown);
+    }
+
+    /// A folder the scan can't read makes the answer unknown, not "no sources".
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_source_folder_makes_the_scan_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        let nested = dir.path().join("pkg");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("main.py"), "").unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&nested).is_ok() {
+            // A test run as root can still list it; there is no unknown scan to exercise.
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let scan = built_in_named_scan(dir.path(), "Python");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(scan, SourceScan::Unknown);
     }
 
     /// A generated project's build command goes through the same table resolution as `build`:

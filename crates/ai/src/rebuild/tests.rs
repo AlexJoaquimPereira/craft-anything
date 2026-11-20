@@ -4750,6 +4750,27 @@ fn a_new_build_stops_before_any_turn_when_its_stacks_program_is_missing() {
     }
 }
 
+/// An empty project preflights the stack's toolchain (Python included); a detected toolchain is
+/// still first, and a stack with no toolchain leaves the old stack-level fallback.
+#[test]
+fn the_empty_project_preflight_checks_the_stack_toolchain_after_detection() {
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(preflight_toolchain(empty.path(), "Python", None).map(|t| t.name.as_str()), Some("Python"));
+    assert!(preflight_toolchain(empty.path(), "Builder's choice", None).is_none());
+    let stale = tempfile::tempdir().unwrap();
+    std::fs::write(stale.path().join("Cargo.toml"), "").unwrap();
+    std::fs::write(stale.path().join("main.py"), "").unwrap();
+    assert_eq!(
+        preflight_toolchain(stale.path(), "Python", None).map(|t| t.name.as_str()),
+        Some("Python"),
+        "a stale marker gives way to the source-backed toolchain the check will use"
+    );
+    let detected = tempfile::tempdir().unwrap();
+    std::fs::write(detected.path().join("go.mod"), "").unwrap();
+    std::fs::write(detected.path().join("main.go"), "").unwrap();
+    assert_eq!(preflight_toolchain(detected.path(), "Python", None).map(|t| t.name.as_str()), Some("Go"), "a detected source-backed toolchain comes first");
+}
+
 /// The preflight checks the program the toolchain will run, so Python is named even though its
 /// stack row has no `program` field, and a missing program says which one to install.
 #[test]

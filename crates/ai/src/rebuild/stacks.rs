@@ -3,6 +3,7 @@
 //! to build with it. The table also lists libraries asked for on top of a stack (shadcn/ui,
 //! Tailwind CSS), whose steps are added to the stack's.
 
+use craft_anything_engine::toolchains::{self, SourceScan};
 use craft_anything_engine::workspace::Manifest;
 use craft_anything_engines::game;
 use std::sync::OnceLock;
@@ -176,19 +177,29 @@ pub fn stack_for_toolchain(toolchain: &str, app: &std::path::Path) -> Option<&'s
 /// source-backed toolchain, then the marker-only fallback for a project whose sources aren't
 /// written yet. Shared by the build and own-tests checks so they agree.
 pub fn toolchain_for_build(app: &std::path::Path, stack: &str, build_toolchain: Option<&str>) -> Option<&'static Toolchain> {
-    build_toolchain
-        .and_then(craft_anything_engine::toolchains::get)
-        .filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name))
-        .or_else(|| toolchain_for(stack).filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name)))
-        .or_else(|| built_in(app))
-        .or_else(|| toolchain_in(app))
+    // An incomplete scan can't prove the recorded toolchain is gone, so it keeps it, exactly as
+    // record_after_build does. A completed scan with no sources falls through.
+    if let Some(tool) = build_toolchain.and_then(toolchains::get) {
+        match toolchains::built_in_named_scan(app, &tool.name) {
+            SourceScan::Found | SourceScan::Unknown => return Some(tool),
+            SourceScan::None => {}
+        }
+    }
+    if let Some(tool) = toolchain_for(stack) {
+        match toolchains::built_in_named_scan(app, &tool.name) {
+            SourceScan::Found | SourceScan::Unknown => return Some(tool),
+            SourceScan::None => {}
+        }
+    }
+    built_in(app).or_else(|| toolchain_in(app))
 }
 
 /// Record the stack and toolchain a finished build actually used, by one rule: a non-game stack
-/// whose dependencies name another stack gives way; a recorded stack whose toolchain is gone
-/// gives way to the toolchain whose markers and sources are here; the toolchain is always
-/// recorded (also when the stack's own toolchain is the one), and a stack matching the toolchain
-/// replaces the recorded one. Game engines keep their stack; Rust's game default may change.
+/// whose dependencies name another stack gives way; a recorded toolchain whose markers and sources
+/// are still here is kept, even when both it and another toolchain have source trees; only when
+/// the recorded toolchain is absent or invalid does the stack's toolchain, then detection, choose
+/// one. An incomplete source scan keeps the recorded choice instead of replacing it. Game engines
+/// keep their stack; Rust's game default may change.
 pub fn record_after_build(manifest: &mut Manifest, app: &std::path::Path) {
     let mut engine = game::Builder::from_stack(&manifest.stack);
     if engine.is_none()
@@ -197,17 +208,40 @@ pub fn record_after_build(manifest: &mut Manifest, app: &std::path::Path) {
         manifest.stack = s.name.clone();
         engine = game::Builder::from_stack(&manifest.stack);
     }
-    let recorded_tool = toolchain_for(&manifest.stack);
-    let tool = recorded_tool
-        .filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name))
-        .or_else(|| (engine.is_none() || engine == Some(game::Builder::Rust)).then(|| built_in(app)).flatten());
-    manifest.build_toolchain = tool.map(|t| t.name.clone());
-    if (engine.is_none() || engine == Some(game::Builder::Rust))
-        && let Some(tool) = tool
-        && recorded_tool.is_none_or(|t| t.name != tool.name)
-        && let Some(s) = stack_for_toolchain(&tool.name, app)
-    {
-        manifest.stack = s.name.clone();
+    let toolchain_here = engine.is_none() || engine == Some(game::Builder::Rust);
+    if !toolchain_here {
+        manifest.build_toolchain = None;
+        return;
+    }
+    // Keep what the last finished turn used while its files are still here. An incomplete scan
+    // can't prove they're gone, so it keeps the recorded toolchain too.
+    if let Some(tool) = manifest.build_toolchain.as_deref().and_then(toolchains::get) {
+        match toolchains::built_in_named_scan(app, &tool.name) {
+            SourceScan::Found | SourceScan::Unknown => return,
+            SourceScan::None => manifest.build_toolchain = None,
+        }
+    }
+    // The recorded toolchain is absent or invalid: use the recorded stack's toolchain when it is
+    // here. An incomplete scan is not evidence that it isn't.
+    if let Some(tool) = toolchain_for(&manifest.stack) {
+        match toolchains::built_in_named_scan(app, &tool.name) {
+            SourceScan::Found => {
+                manifest.build_toolchain = Some(tool.name.clone());
+                return;
+            }
+            SourceScan::Unknown => return,
+            SourceScan::None => {}
+        }
+    }
+    // Nothing recorded or named by the stack can be built: detect the first source-backed
+    // toolchain and record the stack that matches it.
+    if let Some(tool) = built_in(app) {
+        manifest.build_toolchain = Some(tool.name.clone());
+        if let Some(s) = stack_for_toolchain(&tool.name, app) {
+            manifest.stack = s.name.clone();
+        }
+    } else {
+        manifest.build_toolchain = None;
     }
 }
 
@@ -402,6 +436,79 @@ mod tests {
         record_after_build(&mut ws.manifest, &app);
         assert_eq!(ws.manifest.build_toolchain.as_deref(), Some("Python"));
         assert_eq!(ws.manifest.stack, "Python");
+    }
+
+    /// A turn that changed nothing keeps the toolchain the last finished build used, even when
+    /// the folder also has another language's complete source tree to detect.
+    #[test]
+    fn an_unchanged_turn_keeps_the_recorded_toolchain_when_both_source_trees_are_here() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = craft_anything_engine::workspace::Workspace::create(d.path(), "P", "x", craft_anything_engine::workspace::TargetRef::None).unwrap();
+        std::fs::create_dir_all(ws.app_dir().join("src")).unwrap();
+        std::fs::write(ws.app_dir().join("main.py"), "").unwrap();
+        std::fs::write(ws.app_dir().join("Cargo.toml"), "[dependencies]\neframe = \"0.30\"\n").unwrap();
+        std::fs::write(ws.app_dir().join("src/main.rs"), "").unwrap();
+        ws.manifest.stack = "Rust + egui (eframe)".into();
+        ws.manifest.build_toolchain = Some("Python".into());
+        let app = ws.app_dir();
+        record_after_build(&mut ws.manifest, &app);
+        assert_eq!(ws.manifest.build_toolchain.as_deref(), Some("Python"), "the recorded toolchain's files are still here");
+        assert_eq!(ws.manifest.stack, "Rust + egui (eframe)", "an unchanged turn keeps the recorded stack");
+    }
+
+    /// The build selection and the recorder share one contract: an unknown scan keeps the
+    /// recorded toolchain, even when another language's source tree is readable.
+    #[cfg(unix)]
+    #[test]
+    fn build_selection_keeps_recorded_python_when_its_scan_is_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = craft_anything_engine::workspace::Workspace::create(d.path(), "P", "x", craft_anything_engine::workspace::TargetRef::None).unwrap();
+        let nested = ws.app_dir().join("pkg");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(ws.app_dir().join("pyproject.toml"), "").unwrap();
+        std::fs::write(nested.join("main.py"), "").unwrap();
+        std::fs::create_dir_all(ws.app_dir().join("src")).unwrap();
+        std::fs::write(ws.app_dir().join("Cargo.toml"), "").unwrap();
+        std::fs::write(ws.app_dir().join("src/main.rs"), "").unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&nested).is_ok() {
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        ws.manifest.stack = "Rust + egui (eframe)".into();
+        ws.manifest.build_toolchain = Some("Python".into());
+        let app = ws.app_dir();
+        let selected = toolchain_for_build(&app, &ws.manifest.stack, ws.manifest.build_toolchain.as_deref());
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(selected.map(|t| t.name.as_str()), Some("Python"), "the recorded toolchain is kept on an unknown scan");
+    }
+
+    /// An unreadable folder in the recorded toolchain's source scan doesn't prove its sources are
+    /// gone, so the recorded toolchain must not be replaced.
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_source_scan_keeps_the_recorded_toolchain() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = craft_anything_engine::workspace::Workspace::create(d.path(), "P", "x", craft_anything_engine::workspace::TargetRef::None).unwrap();
+        let nested = ws.app_dir().join("pkg");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(ws.app_dir().join("pyproject.toml"), "").unwrap();
+        std::fs::write(nested.join("main.py"), "").unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&nested).is_ok() {
+            // A test run as root can still list it; there is no unknown scan to exercise.
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        ws.manifest.stack = "Rust + egui (eframe)".into();
+        ws.manifest.build_toolchain = Some("Python".into());
+        let app = ws.app_dir();
+        record_after_build(&mut ws.manifest, &app);
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(ws.manifest.build_toolchain.as_deref(), Some("Python"));
+        assert_eq!(ws.manifest.stack, "Rust + egui (eframe)");
     }
 
     #[test]

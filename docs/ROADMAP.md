@@ -2176,9 +2176,13 @@ Gaps found while using the app for real projects.
       with that. A toolchain counts only when it has both its marker and source files (a stale
       Cargo.toml without Rust gives way to Python), the check uses the recorded
       `build_toolchain`/stack toolchain before the Cargo/package shortcuts, and a matching
-      stack replaces the recorded one; game engines keep theirs. The toolchain is recorded even
-      when the stack names it, and before the first turn the check names the program the
-      toolchain will run (Python too, whose stack row names none) and how to get it. Toolchain
+      stack replaces the recorded one; game engines keep theirs. An unchanged turn keeps the
+      recorded toolchain when its markers and sources are still there, even with another
+      language's complete tree beside it, and an incomplete source scan (a partial marker
+      enumeration or a folder past the depth limit) keeps it rather than replacing it; the build
+      check and the recorder share that contract. The toolchain is recorded even when the stack names it, and before the first
+      turn the check names the program the detected toolchain or, for an empty project, the
+      stack's toolchain will run (Python too, whose stack row names none) and how to get it. Toolchain
       facts live in `toolchains.toml` (`sources`, `output_dirs`, `generated_build`,
       `default_stack`, `program_from`), so no rule matches a toolchain by name. `build_toolchain`
       is craft.json v6; old manifests migrate with none recorded.

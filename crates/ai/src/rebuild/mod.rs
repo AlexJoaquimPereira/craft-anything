@@ -857,15 +857,15 @@ impl Worker {
         let kind = kind.as_ref();
         self.editor = self.find_editor(&ws.manifest.stack)?;
         // A build whose toolchain's program is missing would learn so only at its first check,
-        // after a whole turn (#1837). Check the toolchain that will actually run, so a recorded
-        // one whose program is gone is named even when its stack row names no program. An API
-        // builder over SSH builds here, so only a coding agent on the other computer skips it.
+        // after a whole turn (#1837). A detected toolchain comes first; an empty project falls
+        // back to the stack's toolchain, then to the stack's own program. An API builder over SSH
+        // builds here, so only a coding agent on the other computer skips it.
         let engine = game::Builder::from_stack(&ws.manifest.stack);
         if !study::tools_run_remotely(remote, api.is_some()) && (engine.is_none() || engine == Some(game::Builder::Rust)) {
             let app = ws.app_dir();
-            if let Some(tool) = stacks::toolchain_for_build(&app, &ws.manifest.stack, ws.manifest.build_toolchain.as_deref()) {
+            if let Some(tool) = preflight_toolchain(&app, &ws.manifest.stack, ws.manifest.build_toolchain.as_deref()) {
                 missing_toolchain_program_stop(tool, &app, |p| craft_anything_platform::which(p).is_some())?;
-            } else if stacks::toolchain_in(&app).is_none() {
+            } else {
                 missing_program_stop(&ws.manifest.stack, |p| craft_anything_platform::which(p).is_some())?;
             }
         }
@@ -1672,6 +1672,13 @@ fn missing_program_stop(stack: &str, have: impl Fn(&str) -> bool) -> Result<(), 
     Err(ToolError::new(ErrorCode::BadSettings, format!("{stack} is built with {program}, which isn't on this computer.")).with_remediation(format!(
         "{from}, then try again; or start the project again with another stack (\"Build with\" in the app, --build-with in the CLI)."
     )))
+}
+
+/// The toolchain whose program a build's first check will need before the builder starts: the
+/// same source-backed selection the check uses (recorded, stack, detected, marker fallback),
+/// then the stack's own toolchain for an empty project. None leaves the stack-level fallback.
+fn preflight_toolchain(app: &Path, stack: &str, build_toolchain: Option<&str>) -> Option<&'static stacks::Toolchain> {
+    stacks::toolchain_for_build(app, stack, build_toolchain).or_else(|| stacks::toolchain_for(stack))
 }
 
 /// Stops a build whose toolchain's program this computer doesn't have: the program the check will
