@@ -311,8 +311,20 @@ fn an_ssh_agent_check_names_the_command_to_run() {
     assert!(missing.remediation.unwrap().contains("Install it there"));
     // A program that ran and exited non-zero is installed: a `--version` may exit 1 or 126.
     for code in [1, 126] {
-        assert!(remote_check_outcome("pi5", "claude", Ok(out(Some(code)))).is_ok(), "exit {code} isn't a missing agent");
+        assert!(remote_check_outcome("pi5", "claude", Ok(out(Some(code)))).is_ok(), "exit {code} without a launch failure isn't a missing agent");
     }
+    // A shell's 126 for a file it found but couldn't execute is a launch failure, not the
+    // program's own exit status.
+    let not_executable = craft_anything_platform::Output {
+        stderr: b"/opt/claude: Permission denied\n".to_vec(),
+        stderr_tail: b"/opt/claude: Permission denied\n".to_vec(),
+        ..out(Some(126))
+    };
+    let not_executable = remote_check_outcome("pi5", "/opt/claude", Ok(not_executable)).unwrap_err();
+    assert!(not_executable.message.contains("couldn't be run"), "{}", not_executable.message);
+    assert!(not_executable.remediation.unwrap().contains("executable"));
+    let own_126 = craft_anything_platform::Output { stderr: b"claude: bad option\n".to_vec(), stderr_tail: b"claude: bad option\n".to_vec(), ..out(Some(126)) };
+    assert!(remote_check_outcome("pi5", "claude", Ok(own_126)).is_ok(), "the program itself exited 126");
     // ssh's own failures say what to fix, and show ssh's message rather than guessing.
     let refused = craft_anything_platform::Output {
         stderr: b"me@pi5: Permission denied (publickey).\n".to_vec(),
