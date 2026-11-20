@@ -51,7 +51,7 @@ pub(super) fn own_build_check(app: &Path, place: &str, stack: &str, build_toolch
     }
     let tool = stacks::toolchain_for_build(app, stack, build_toolchain);
     match tool.filter(|_| engine.is_none()) {
-        Some(tool) => own_build(app, tool, stop),
+        Some(tool) => own_build(app, tool, &tool.build, stop),
         None if engine.is_some() || static_site(app) => build_check(app, place, stack, build_toolchain, editor, stop),
         None => (true, "Nothing was built: Craft Anything doesn't know how to build this kind of project.".into()),
     }
@@ -73,20 +73,9 @@ fn own_unity_check(app: &Path, editor: &Path, stop: &CheckStop) -> (bool, String
     }
 }
 
-fn own_build(app: &Path, tool: &stacks::Toolchain, stop: &CheckStop) -> (bool, String) {
-    match run_tool(app, tool, &tool.build, 2 * 60, stop) {
-        Ok((true, _)) => (true, format!("`{}` passed.", tool.build.join(" "))),
-        Ok((false, out)) => (false, format!("Build failed: {}", error_lines(&out))),
-        Err(e) => (false, format!("Couldn't run the build: {e}")),
-    }
-}
-
-/// A generated Node project's build, which must have a build script (unlike a person's own
-/// package, where the toolchain's `--if-present` means nothing to build).
-fn node_build(app: &Path, stop: &CheckStop) -> (bool, String) {
-    let npm = Path::new(if cfg!(windows) { "npm.cmd" } else { "npm" });
-    match run_in(app, npm, &["run".into(), "build".into()], 2 * 60, stop) {
-        Ok((true, _)) => (true, "Build succeeded.".into()),
+fn own_build(app: &Path, tool: &stacks::Toolchain, command: &[String], stop: &CheckStop) -> (bool, String) {
+    match run_tool(app, tool, command, 2 * 60, stop) {
+        Ok((true, _)) => (true, format!("`{}` passed.", command.join(" "))),
         Ok((false, out)) => (false, format!("Build failed: {}", error_lines(&out))),
         Err(e) => (false, format!("Couldn't run the build: {e}")),
     }
@@ -135,12 +124,10 @@ pub(super) fn build_check(app: &Path, place: &str, stack: &str, build_toolchain:
     // recorded stack's, else the first toolchain with markers and sources. Game engines keep theirs.
     let toolchain = (engine.is_none() || engine == Some(game::Builder::Rust)).then(|| stacks::toolchain_for_build(app, stack, build_toolchain)).flatten();
     if let Some(tool) = toolchain {
-        // A generated Node project needs its build script: the toolchain's `--if-present` is for a
-        // person's own package with nothing to build, not for one the builder made.
-        if tool.name == "Node.js" {
-            return node_build(app, stop);
-        }
-        return own_build(app, tool, stop);
+        // A generated project runs the command the table gives for one; a person's own project
+        // keeps the `build` command, where nothing to build is a pass (Node's `--if-present`).
+        let command = if tool.generated_build.is_empty() { &tool.build } else { &tool.generated_build };
+        return own_build(app, tool, command, stop);
     }
     let result: Result<(bool, String), String> = match (engine, editor) {
         (Some(game::Builder::Unity), Some(ed)) => {
@@ -206,7 +193,7 @@ pub(super) fn build_check(app: &Path, place: &str, stack: &str, build_toolchain:
                         (false, missing(app, place, format!("No project to build found in {place} yet.")))
                     }
                 },
-                |tool| own_build(app, tool, stop),
+                |tool| own_build(app, tool, &tool.build, stop),
             );
         }
         _ => return (false, missing(app, place, format!("No project to build found in {place} yet."))),
@@ -318,7 +305,7 @@ func TestAnswer(t *testing.T) {
         let tool = stacks::toolchain_in(app).expect("go.mod identifies the Go toolchain");
         assert_eq!(tool.name, "Go");
 
-        let build = || own_build_check(app, "the project folder", stacks::BUILDERS_CHOICE, None, &stop);
+        let build = || own_build_check(app, "the project folder", stacks::BUILDERS_CHOICE, None, None, &stop);
         let test = || own_tests_check(app, Some(tool), &stop);
         assert_eq!(build(), (true, "`go build ./...` passed.".into()));
         assert_eq!(test(), (true, "`go test ./...` passed.".into()));
@@ -420,8 +407,10 @@ func TestAnswer(t *testing.T) {
     #[test]
     fn a_persons_own_build_is_judged_by_its_toolchain() {
         let (d, stop) = (tempfile::tempdir().unwrap(), CheckStop::default());
-        assert!(own_build(d.path(), &stand_in("exit 0", &[]), &stop).0);
-        let (passed, note) = own_build(d.path(), &stand_in("echo 'error: no such file'; exit 2", &[]), &stop);
+        let ok = stand_in("exit 0", &[]);
+        assert!(own_build(d.path(), &ok, &ok.build, &stop).0);
+        let bad = stand_in("echo 'error: no such file'; exit 2", &[]);
+        let (passed, note) = own_build(d.path(), &bad, &bad.build, &stop);
         assert!(!passed && note.contains("no such file"), "{note}");
     }
 
@@ -611,13 +600,19 @@ func TestAnswer(t *testing.T) {
     }
 
     /// R2.9/#1837: a stale Cargo.toml beside Python sources is checked with Python, not Cargo.
+    /// The project's own interpreter is a stand-in, so the test needs no real Python.
     #[cfg(unix)]
     #[test]
     fn a_stale_manifest_is_checked_with_the_toolchain_that_has_sources() {
+        use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let app = d.path();
         std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"stale\"\n").unwrap();
         std::fs::write(app.join("main.py"), "print('hi')\n").unwrap();
+        let python = app.join(".venv/bin/python");
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "#!/bin/sh\necho compileall\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
         let stop = CheckStop::default();
         let (passed, note) = build_check(app, "app/", "Rust + egui (eframe)", Some("Python"), None, &stop);
         assert!(passed, "{note}");

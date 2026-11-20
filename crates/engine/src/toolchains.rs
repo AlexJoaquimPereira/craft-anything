@@ -13,9 +13,25 @@ pub struct Toolchain {
     /// scanned below its folder and skipping build output. Empty means the marker is enough.
     #[serde(default)]
     pub sources: Vec<String>,
-    /// The program that builds it and its arguments, run in the project's folder.
+    /// Folders below the project that hold this toolchain's build output, never its sources
+    /// (`bin` and `obj` for .NET, `build` for Gradle). The folders every toolchain skips are
+    /// always skipped.
+    #[serde(default)]
+    pub output_dirs: Vec<String>,
+    /// The command that builds it and its arguments, run in the project's folder.
     #[serde(default)]
     pub build: Vec<String>,
+    /// The build command a generated project must run, when `build` is safe for a person's own
+    /// project with nothing to build (Node's `--if-present`). Empty means `build` is the command
+    /// for both.
+    #[serde(default)]
+    pub generated_build: Vec<String>,
+    /// The stack to record for this toolchain when the files built here name no stack row.
+    #[serde(default)]
+    pub default_stack: Option<String>,
+    /// How to get the program its build runs, for the "not installed" message.
+    #[serde(default)]
+    pub program_from: Option<String>,
     /// The same for its tests.
     #[serde(default)]
     pub test: Vec<String>,
@@ -102,7 +118,7 @@ fn built_in_one(tool: &Toolchain, dir: &Path) -> bool {
 }
 
 fn sources_present(tool: &Toolchain, dir: &Path) -> bool {
-    tool.sources.is_empty() || tool.sources.iter().any(|pattern| has_source_file(dir, pattern, &tool.name))
+    tool.sources.is_empty() || tool.sources.iter().any(|pattern| has_source_file(dir, pattern, &tool.output_dirs))
 }
 
 fn root_entrypoint(dir: &Path, tool: &Toolchain) -> bool {
@@ -115,11 +131,10 @@ const SOURCE_SCAN_FILES: usize = 20_000;
 /// Output folders no toolchain's sources live in.
 const SOURCE_SKIPPED: &[&str] = &["target", "node_modules", ".git", ".venv", "venv", "dist", "out", "__pycache__", ".next", ".cargo"];
 
-/// Whether a file ending in `pattern`'s suffix exists below `dir`, skipping build output.
-/// `.NET` also skips `bin` and `obj`; a Rust package's `src/bin` is source, not output.
-fn has_source_file(dir: &Path, pattern: &str, toolchain: &str) -> bool {
+/// Whether a file ending in `pattern`'s suffix exists below `dir`, skipping build output. The
+/// toolchain's own `output_dirs` are skipped too; a Rust package's `src/bin` is source, not output.
+fn has_source_file(dir: &Path, pattern: &str, output_dirs: &[String]) -> bool {
     let suffix = pattern.strip_prefix('*').unwrap_or(pattern);
-    let dotnet_output = |name: &str| toolchain == ".NET" && matches!(name, "bin" | "obj");
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     let mut seen = 0usize;
     while let Some((folder, depth)) = stack.pop() {
@@ -134,7 +149,7 @@ fn has_source_file(dir: &Path, pattern: &str, toolchain: &str) -> bool {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 let name = name.as_ref();
-                if depth < SOURCE_SCAN_DEPTH && !SOURCE_SKIPPED.contains(&name) && !dotnet_output(name) {
+                if depth < SOURCE_SCAN_DEPTH && !SOURCE_SKIPPED.contains(&name) && !output_dirs.iter().any(|d| d.as_str() == name) {
                     stack.push((entry.path(), depth + 1));
                 }
             } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(suffix) {
@@ -192,9 +207,9 @@ impl Toolchain {
         let here = |p: &&String| windows == [".bat", ".cmd", ".exe"].iter().any(|e| p.ends_with(e));
         // Callers run in `app`, so a project-relative executable must first be made absolute.
         // Keep virtualenv symlinks intact: canonicalizing can select the system interpreter.
-        // Only the toolchain's own program (its build's or tests') has local copies and a Windows
-        // name: a Maven project's `java -jar` must not become `mvnw -jar`.
-        let own = [&self.build, &self.test].iter().any(|c| c.first() == Some(program));
+        // Only the toolchain's own program (its build's, generated build's or tests') has local
+        // copies and a Windows name: a Maven project's `java -jar` must not become `mvnw -jar`.
+        let own = [&self.build, &self.generated_build, &self.test].iter().any(|c| c.first() == Some(program));
         let local =
             self.local_programs.iter().filter(|_| own).filter(here).map(|p| app.join(p)).find(|p| p.is_file()).map(std::path::absolute).transpose().ok()?;
         let system = self.windows_program.as_ref().filter(|_| windows && own).unwrap_or(program);
@@ -429,6 +444,19 @@ mod tests {
             std::fs::write(dir.path().join(marker), "").unwrap();
             assert_eq!(found_in(dir.path()).unwrap().name, name);
         }
+    }
+
+    /// A generated project's build command goes through the same table resolution as `build`:
+    /// Node's `npm` becomes `npm.cmd` on Windows instead of a hand-written program name.
+    #[test]
+    fn a_generated_build_uses_the_tables_program_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let node = found_in(dir.path()).unwrap();
+        assert_eq!(node.name, "Node.js");
+        assert_eq!(node.generated_build.iter().map(String::as_str).collect::<Vec<_>>(), vec!["npm", "run", "build"]);
+        assert_eq!(node.command_for(dir.path(), &node.generated_build, true).unwrap().0, PathBuf::from("npm.cmd"));
+        assert_eq!(node.command_for(dir.path(), &node.generated_build, false).unwrap().0, PathBuf::from("npm"));
     }
 
     /// Python build and run use the same project-local interpreter; Windows uses its own names.

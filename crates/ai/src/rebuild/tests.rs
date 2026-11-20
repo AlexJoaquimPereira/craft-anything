@@ -4749,3 +4749,18 @@ fn a_new_build_stops_before_any_turn_when_its_stacks_program_is_missing() {
         assert_eq!(stacks::missing_program(&s.name, |_| false).map(|(p, from)| (p, !from.is_empty())), Some(("cargo", true)), "{}", s.name);
     }
 }
+
+/// The preflight checks the program the toolchain will run, so Python is named even though its
+/// stack row has no `program` field, and a missing program says which one to install.
+#[test]
+fn a_build_names_the_missing_program_of_the_toolchain_it_will_run() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("main.py"), "").unwrap();
+    let tool = stacks::toolchain_for_build(d.path(), "Python", None).unwrap();
+    let (program, _) = tool.command(d.path(), &tool.build).unwrap();
+    let program = program.to_string_lossy().into_owned();
+    let err = missing_toolchain_program_stop(tool, d.path(), |_| false).unwrap_err();
+    assert!(err.message.contains(program.as_str()) && err.message.contains("Python"), "{err:?}");
+    assert!(err.remediation.as_deref().is_some_and(|r| r.contains("python.org")), "{err:?}");
+    assert!(missing_toolchain_program_stop(tool, d.path(), |p| p == program.as_str()).is_ok());
+}

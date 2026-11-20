@@ -3,6 +3,8 @@
 //! to build with it. The table also lists libraries asked for on top of a stack (shadcn/ui,
 //! Tailwind CSS), whose steps are added to the stack's.
 
+use craft_anything_engine::workspace::Manifest;
+use craft_anything_engines::game;
 use std::sync::OnceLock;
 
 /// One stack ("React + TypeScript (Vite)", "Unity"…).
@@ -118,8 +120,16 @@ pub fn asked_for(words: &str) -> Option<&'static Stack> {
     catalogue().iter().find(|s| s.asked_by.iter().any(|p| words.contains(p.as_str())))
 }
 
+/// The dependencies a folder's package.json and Cargo.toml name, for every rule that reads them.
+fn dependencies(dir: &std::path::Path) -> Vec<String> {
+    let mut deps = craft_anything_engine::outputs::npm_dependencies(dir);
+    deps.extend(craft_anything_engine::outputs::cargo_dependencies(dir));
+    deps
+}
+
 /// The stack a build in `app` uses, from its package.json dependencies (the first stack in table
-/// order whose `uses` it lists); None when it has none or names no stack in the table.
+/// order whose `uses` it lists); None when it has none or names no stack. Cargo.toml doesn't
+/// replace a stack the request named; the toolchain rule covers a build that moved language.
 pub fn used_in(app: &std::path::Path) -> Option<&'static Stack> {
     let deps = craft_anything_engine::outputs::npm_dependencies(app);
     catalogue().iter().find(|s| s.uses.iter().any(|d| deps.contains(d)))
@@ -129,8 +139,7 @@ pub fn used_in(app: &std::path::Path) -> Option<&'static Stack> {
 /// most, then the dependencies, then the other files that name a stack. None when nothing does.
 pub fn found_in(dir: &std::path::Path) -> Option<&'static Stack> {
     let by_file = |engine: bool| catalogue().iter().filter(|s| s.engine.is_some() == engine).find(|s| s.found_by.iter().any(|f| has_file(dir, f)));
-    let mut deps = craft_anything_engine::outputs::npm_dependencies(dir);
-    deps.extend(craft_anything_engine::outputs::cargo_dependencies(dir));
+    let deps = dependencies(dir);
     let by_deps = || catalogue().iter().find(|s| s.uses.iter().any(|d| deps.contains(d)) && s.needs.iter().all(|d| deps.contains(d)));
     by_file(true).or_else(by_deps).or_else(|| by_file(false))
 }
@@ -148,23 +157,18 @@ pub fn toolchain_for(stack: &str) -> Option<&'static Toolchain> {
 }
 
 /// The stack to record for `toolchain` that was built in `app`: the first stack with that
-/// toolchain whose declared dependencies or files are here, then the toolchain's own default
-/// (Python, or Rust's console stack). None for a toolchain with no stack row (Go, .NET, Maven,
-/// Gradle, Make): the recorded toolchain still tells the check. It searches every stack rather
-/// than taking the first stack from either dependency file, so a stale package.json can't hide a
-/// matching Cargo dependency.
+/// toolchain whose declared dependencies or files are here, then the toolchain's own
+/// `default_stack` from the table. None for a toolchain with neither (Go, .NET, Maven, Gradle,
+/// Make): the recorded toolchain still tells the check. It searches every stack rather than taking
+/// the first stack from either dependency file, so a stale package.json can't hide a matching
+/// Cargo dependency.
 pub fn stack_for_toolchain(toolchain: &str, app: &std::path::Path) -> Option<&'static Stack> {
-    let mut deps = craft_anything_engine::outputs::npm_dependencies(app);
-    deps.extend(craft_anything_engine::outputs::cargo_dependencies(app));
+    let deps = dependencies(app);
     catalogue()
         .iter()
-        .find(|s| s.toolchain.as_deref() == Some(toolchain) && s.uses.iter().any(|d| deps.contains(d)))
+        .find(|s| s.toolchain.as_deref() == Some(toolchain) && s.uses.iter().any(|d| deps.contains(d)) && s.needs.iter().all(|d| deps.contains(d)))
         .or_else(|| catalogue().iter().find(|s| s.toolchain.as_deref() == Some(toolchain) && s.found_by.iter().any(|f| has_file(app, f))))
-        .or_else(|| match toolchain {
-            "Python" => get("Python"),
-            "Rust" => get("Rust (console)"),
-            _ => None,
-        })
+        .or_else(|| craft_anything_engine::toolchains::get(toolchain).and_then(|t| t.default_stack.as_deref()).and_then(get))
 }
 
 /// The toolchain to build or test `app` with, in precedence order: the recorded build toolchain
@@ -178,6 +182,33 @@ pub fn toolchain_for_build(app: &std::path::Path, stack: &str, build_toolchain: 
         .or_else(|| toolchain_for(stack).filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name)))
         .or_else(|| built_in(app))
         .or_else(|| toolchain_in(app))
+}
+
+/// Record the stack and toolchain a finished build actually used, by one rule: a non-game stack
+/// whose dependencies name another stack gives way; a recorded stack whose toolchain is gone
+/// gives way to the toolchain whose markers and sources are here; the toolchain is always
+/// recorded (also when the stack's own toolchain is the one), and a stack matching the toolchain
+/// replaces the recorded one. Game engines keep their stack; Rust's game default may change.
+pub fn record_after_build(manifest: &mut Manifest, app: &std::path::Path) {
+    let mut engine = game::Builder::from_stack(&manifest.stack);
+    if engine.is_none()
+        && let Some(s) = used_in(app)
+    {
+        manifest.stack = s.name.clone();
+        engine = game::Builder::from_stack(&manifest.stack);
+    }
+    let recorded_tool = toolchain_for(&manifest.stack);
+    let tool = recorded_tool
+        .filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name))
+        .or_else(|| (engine.is_none() || engine == Some(game::Builder::Rust)).then(|| built_in(app)).flatten());
+    manifest.build_toolchain = tool.map(|t| t.name.clone());
+    if (engine.is_none() || engine == Some(game::Builder::Rust))
+        && let Some(tool) = tool
+        && recorded_tool.is_none_or(|t| t.name != tool.name)
+        && let Some(s) = stack_for_toolchain(&tool.name, app)
+    {
+        manifest.stack = s.name.clone();
+    }
 }
 
 /// The libraries `request` asks for that work with `stack`, in table order.
@@ -316,6 +347,12 @@ mod tests {
         assert_eq!(built(&[("App.csproj", ""), ("bin/Generated.cs", "")]), None, ".NET build output isn't source");
         assert_eq!(built(&[("pom.xml", ""), ("src/Main.java", "")]), Some("Maven"));
         assert_eq!(built(&[("build.gradle", ""), ("src/main/groovy/App.groovy", "")]), Some("Gradle"), "Groovy is Gradle source");
+        assert_eq!(
+            built(&[("build.gradle", ""), ("main.py", ""), ("build/generated/Old.groovy", "")]),
+            Some("Python"),
+            "a Gradle build folder is output, not source"
+        );
+        assert_eq!(built(&[("build.gradle", ""), ("build/generated/Old.groovy", "")]), None, "Gradle output alone isn't a project");
         assert_eq!(built(&[("Makefile", "")]), Some("Make"));
         assert_eq!(built(&[("main.py", "")]), Some("Python"), "a root entrypoint alone");
         assert_eq!(built(&[("notes.md", "")]), None);
@@ -334,6 +371,37 @@ mod tests {
         assert_eq!(toolchain_for("Rust + egui (eframe)").map(|t| t.name.as_str()), Some("Rust"));
         assert_eq!(toolchain_for("React + TypeScript (Vite)").map(|t| t.name.as_str()), Some("Node.js"));
         assert_eq!(toolchain_for("Unity"), None);
+        for t in craft_anything_engine::toolchains::catalogue() {
+            if let Some(stack) = &t.default_stack {
+                assert!(get(stack).is_some(), "{} names unknown default stack {stack}", t.name);
+            }
+        }
+    }
+
+    /// A stack's `needs` are part of its identity: a package that lists `vite` without `react`
+    /// isn't the React stack, so it records no stack rather than the wrong one.
+    #[test]
+    fn a_stack_that_needs_another_dependency_does_not_match_without_it() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("package.json"), r#"{"dependencies": {"vite": "6"}}"#).unwrap();
+        assert_eq!(stack_for_toolchain("Node.js", d.path()), None, "vite without react isn't the React stack");
+        std::fs::write(d.path().join("package.json"), r#"{"dependencies": {"vite": "6", "react": "19"}}"#).unwrap();
+        assert_eq!(stack_for_toolchain("Node.js", d.path()).map(|s| s.name.as_str()), Some("React + TypeScript (Vite)"));
+    }
+
+    /// The toolchain is recorded even when it is the one the stack names: the check then uses the
+    /// same toolchain the build used instead of deriving it again.
+    #[test]
+    fn a_finished_build_records_the_toolchain_even_when_the_stack_names_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = craft_anything_engine::workspace::Workspace::create(d.path(), "P", "x", craft_anything_engine::workspace::TargetRef::None).unwrap();
+        std::fs::create_dir_all(ws.app_dir()).unwrap();
+        std::fs::write(ws.app_dir().join("main.py"), "").unwrap();
+        ws.manifest.stack = "Python".into();
+        let app = ws.app_dir();
+        record_after_build(&mut ws.manifest, &app);
+        assert_eq!(ws.manifest.build_toolchain.as_deref(), Some("Python"));
+        assert_eq!(ws.manifest.stack, "Python");
     }
 
     #[test]

@@ -67,7 +67,7 @@
       "type": "boolean"
     },
     "build_toolchain": {
-      "description": "The toolchain the last finished build used (\"Python\", \"Rust\"…), when it isn't the one the\nrecorded stack names; the build check uses it. None until a build records one.",
+      "description": "The toolchain the last finished build used (\"Python\", \"Rust\"…), also when it is the one\nthe recorded stack names; the build check uses it. None until a build records one.",
       "type": [
         "string",
         "null"

@@ -130,9 +130,9 @@ fn manifest_v4_to_v5(doc: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Version 6 adds the toolchain the last finished build used (`build_toolchain`), when it isn't
-/// the one the recorded stack names. A version-5 manifest predates it; the field is optional and
-/// a check derives the toolchain from the files until a build records one.
+/// Version 6 adds the toolchain the last finished build used (`build_toolchain`). A version-5
+/// manifest predates it; the field is optional and a check derives the toolchain from the files
+/// until a build records one.
 fn manifest_v5_to_v6(doc: &mut Value) -> Result<(), String> {
     if doc.is_object() { Ok(()) } else { Err("the manifest isn't a JSON object".into()) }
 }
@@ -410,8 +410,8 @@ pub struct Manifest {
     /// The stack chosen for the build ("React + TypeScript (Vite)", "Rust + Bevy"…).
     #[serde(default)]
     pub stack: String,
-    /// The toolchain the last finished build used ("Python", "Rust"…), when it isn't the one the
-    /// recorded stack names; the build check uses it. None until a build records one.
+    /// The toolchain the last finished build used ("Python", "Rust"…), also when it is the one
+    /// the recorded stack names; the build check uses it. None until a build records one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_toolchain: Option<String>,
     #[serde(default)]
