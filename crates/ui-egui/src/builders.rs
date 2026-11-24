@@ -331,7 +331,7 @@ impl CraftApp {
         let job = self.jobs.spawn(trf("Connect {name}", &[("name", &name)]), true, move |j| {
             let result = hub.add_server_until(&name, &address, Some(model.as_str()).filter(|m| !m.is_empty()), key, &j.cancel).map(|_| ());
             let address = address.trim().to_string();
-            Ok(crate::Done::BackendAdded { name, result, choices, address })
+            Ok(crate::Done::BackendAdded { name, result, choices, address, submitted_command: None })
         });
         self.server_form.connecting = Some((job, shown, std::time::Instant::now()));
     }

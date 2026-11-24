@@ -1863,7 +1863,7 @@ mod tests {
     #[test]
     fn a_late_add_does_not_undo_a_choice_made_meanwhile() {
         let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Beginner, false));
-        let added = |choices| Ok(Done::BackendAdded { name: "Home server".into(), result: Ok(()), choices, address: String::new() });
+        let added = |choices| Ok(Done::BackendAdded { name: "Home server".into(), result: Ok(()), choices, address: String::new(), submitted_command: None });
         let started = app.backend_choices;
         app.choose_backend(None);
         app.handle_done(Finished { job: 0, result: added(started) });
@@ -1872,10 +1872,37 @@ mod tests {
         assert_eq!(app.state.backend.as_deref(), Some("Home server"), "with no choice meanwhile, the added AI is chosen");
         // Two adds at once: the first one's selection isn't a choice, so the second is selected too.
         let started = app.backend_choices;
-        let other = |choices| Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices, address: String::new() });
+        let other = |choices| Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices, address: String::new(), submitted_command: None });
         app.handle_done(Finished { job: 0, result: added(started) });
         app.handle_done(Finished { job: 0, result: other(started) });
         assert_eq!(app.state.backend.as_deref(), Some("Laptop"), "the add that finished last is selected");
+    }
+
+    /// A command edited while its SSH check runs is newer than the one submitted: the add clears
+    /// only the exact draft it sent, and a failed check keeps whatever is there.
+    #[test]
+    fn a_command_edited_while_its_add_runs_is_kept() {
+        let mut app = demo::app(demo::engine(craft_anything_engine::Mode::Beginner, false));
+        let name = "Claude on box";
+        let answer = |result, submitted: Option<&str>, choices| crate::jobs::Finished {
+            job: 0,
+            result: Ok(Done::BackendAdded { name: name.into(), result, choices, address: String::new(), submitted_command: submitted.map(str::to_string) }),
+        };
+        app.state.remote_commands.insert(name.into(), " /opt/claude ".into());
+        app.handle_done(answer(Ok(()), Some("/opt/claude"), app.backend_choices));
+        assert!(!app.state.remote_commands.contains_key(name), "the submitted draft is cleared");
+
+        app.state.remote_commands.insert(name.into(), "/opt/claude --new".into());
+        app.handle_done(answer(Ok(()), Some("/opt/claude"), app.backend_choices));
+        assert_eq!(app.state.remote_commands.get(name).map(String::as_str), Some("/opt/claude --new"), "an edit made while the check ran stays");
+
+        app.state.remote_commands.insert(name.into(), "/opt/claude".into());
+        app.handle_done(answer(Err(craft_anything_engine::evidence::ToolError::invalid("not found")), Some("/opt/claude"), app.backend_choices));
+        assert_eq!(app.state.remote_commands.get(name).map(String::as_str), Some("/opt/claude"), "a failed check keeps the draft");
+
+        app.state.remote_commands.insert(name.into(), "/typed while checking".into());
+        app.handle_done(answer(Ok(()), None, app.backend_choices));
+        assert_eq!(app.state.remote_commands.get(name).map(String::as_str), Some("/typed while checking"), "a draft typed with no command submitted stays");
     }
 
     /// A chat started while an AI connects is a choice too: the add doesn't switch AI under it.
@@ -1898,7 +1925,7 @@ mod tests {
         assert!(app.conversation.is_some(), "the chat started");
         app.handle_done(Finished {
             job: 0,
-            result: Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices: started, address: String::new() }),
+            result: Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices: started, address: String::new(), submitted_command: None }),
         });
         assert_eq!(app.state.backend.as_deref(), Some("Box"), "the chat's AI stays chosen");
         assert!(app.conversation.is_some(), "the chat keeps going");
@@ -1907,7 +1934,7 @@ mod tests {
         app.send("And then?");
         app.handle_done(Finished {
             job: 0,
-            result: Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices: started, address: String::new() }),
+            result: Ok(Done::BackendAdded { name: "Laptop".into(), result: Ok(()), choices: started, address: String::new(), submitted_command: None }),
         });
         assert_eq!(app.state.backend.as_deref(), Some("Box"), "a follow-up keeps its AI");
         assert!(app.conversation.is_some(), "the follow-up's answer keeps going");
@@ -1983,7 +2010,7 @@ mod model_options_tests {
         let ask = |app: &mut CraftApp, job| app.server_form.connecting = Some((job, "Npu".into(), std::time::Instant::now()));
         let answer = |job, address: &str, result| crate::jobs::Finished {
             job,
-            result: Ok(crate::Done::BackendAdded { name: "Npu".into(), result, choices: 0, address: address.into() }),
+            result: Ok(crate::Done::BackendAdded { name: "Npu".into(), result, choices: 0, address: address.into(), submitted_command: None }),
         };
         ask(&mut app, 7);
         app.handle_done(answer(7, A, Err(refused())));
@@ -2044,6 +2071,7 @@ mod model_options_tests {
                 result: Err(refused),
                 choices: app.backend_choices,
                 address: "http://127.0.0.1:0/v1".into(),
+                submitted_command: None,
             }),
         });
         assert!(app.server_form.connecting.is_none());
@@ -2073,6 +2101,7 @@ mod model_options_tests {
                 result: Err(craft_anything_engine::evidence::ToolError::cancelled()),
                 choices: app.backend_choices,
                 address: "http://127.0.0.1:0/v1".into(),
+                submitted_command: None,
             }),
         });
         assert!(app.server_form.connecting.is_none());
