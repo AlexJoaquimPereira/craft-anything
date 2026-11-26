@@ -3745,6 +3745,48 @@ fn with_nothing_to_build_with_start_offers_what_was_found_instead_of_a_dead_end(
     h.get_by_label("Build with Claude Code");
 }
 
+/// #2470: at 1366 x 768 a start dialog with several detected agents was taller than the window,
+/// leaving its choices and buttons below the bottom edge with no way to scroll to them.
+#[test]
+fn a_tall_start_dialog_scrolls_at_1366_by_768() {
+    use craft_anything_ai::{BackendConfig, BackendKind, Detected};
+    use craft_anything_ui_egui::state::Modal;
+    let mut h = harness_sized(egui::vec2(1366.0, 768.0), || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.detected = Some(
+            (0..10)
+                .map(|i| Detected {
+                    suggestion: BackendConfig {
+                        name: format!("Agent {i}"),
+                        kind: BackendKind::AgentCli,
+                        model: "claude-code".into(),
+                        base_url: None,
+                        ssh_host: None,
+                        enabled: true,
+                    },
+                    reason: String::new(),
+                    needs_key: false,
+                })
+                .collect(),
+        );
+        a.state.modal = Some(Modal::NeedBuilder { start: true });
+        a
+    });
+    h.run_steps(5);
+    let viewport = h.ctx.content_rect();
+    h.get_by_label("Build with Agent 9").scroll_to_me();
+    h.run_steps(3);
+    let agent = h.get_by_label("Build with Agent 9").rect();
+    assert!(viewport.contains_rect(agent), "the last agent at {agent:?} is outside {viewport:?}");
+    h.get_by_label("Cancel").scroll_to_me();
+    h.run_steps(3);
+    let cancel = h.get_by_label("Cancel").rect();
+    assert!(viewport.contains_rect(cancel), "Cancel at {cancel:?} is outside {viewport:?}");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.modal, None);
+}
+
 /// #259: with only the Claude desktop app installed, the dialog says that building needs Claude
 /// Code apart from it, instead of only "No coding agent was found".
 #[test]
