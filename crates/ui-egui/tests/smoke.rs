@@ -3787,6 +3787,37 @@ fn a_tall_start_dialog_scrolls_at_1366_by_768() {
     assert_eq!(h.state().state.modal, None);
 }
 
+/// The engine dialog opens while its inventory is still being looked up. When the inventory
+/// arrives, the same dialog must use the new room instead of the short first frame's viewport.
+#[test]
+fn an_engine_dialog_uses_the_room_that_arrives_with_its_inventory() {
+    use craft_anything_engines::game::Builder;
+    use craft_anything_ui_egui::state::Modal;
+    let mut h = harness_sized(egui::vec2(1366.0, 768.0), || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.game_engines = None;
+        a.state.modal = Some(Modal::Engine(Builder::Unreal));
+        a
+    });
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, Some(Modal::Engine(Builder::Unreal)));
+    h.state_mut().game_engines = Some(Default::default());
+    h.run_steps(4);
+    h.get_by_label("Get Unreal Engine");
+    assert_eq!(h.state().state.modal, Some(Modal::Engine(Builder::Unreal)), "the same dialog grew");
+    let clip = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("craft-modal-clip"))).expect("the dialog viewport was recorded");
+    assert!(clip.height() >= 300.0, "the grown dialog's viewport is only {} points tall", clip.height());
+    let close = h.query_all_by_label("Close").max_by(|a, b| a.rect().bottom().total_cmp(&b.rect().bottom())).expect("a Close button");
+    close.scroll_to_me();
+    h.run_steps(3);
+    let close = h.query_all_by_label("Close").max_by(|a, b| a.rect().bottom().total_cmp(&b.rect().bottom())).expect("a Close button");
+    let rect = close.rect();
+    assert!(clip.contains_rect(rect), "the dialog's Close at {rect:?} is outside its viewport {clip:?}");
+    close.click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.modal, None);
+}
+
 /// #259: with only the Claude desktop app installed, the dialog says that building needs Claude
 /// Code apart from it, instead of only "No coding agent was found".
 #[test]

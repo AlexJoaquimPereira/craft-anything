@@ -102,7 +102,10 @@ pub fn modals(app: &mut CraftApp, ctx: &egui::Context) {
         .frame(egui::Frame::new().fill(t.card).corner_radius(t.r_lg()).inner_margin(theme::pad::ROOMY).stroke(egui::Stroke::new(1.0, t.card_border)))
         .show(ctx, |ui| {
             ui.set_width(width);
-            egui::ScrollArea::vertical()
+            // The area's stored size is the previous frame's content. Re-apply the current
+            // allowance so a dialog that grows (an engine inventory arriving) can use it.
+            ui.set_max_height(max_h);
+            let scroll = egui::ScrollArea::vertical()
                 .id_salt(("craft-modal-scroll", generation))
                 .min_scrolled_height(0.0)
                 .max_height(max_h)
@@ -216,6 +219,8 @@ pub fn modals(app: &mut CraftApp, ctx: &egui::Context) {
                         }
                     }
                 });
+            // The layout regression checks the dialog's own viewport, not only the window.
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("craft-modal-clip"), scroll.inner_rect));
         });
     if resp.should_close() {
         dismiss(app);
