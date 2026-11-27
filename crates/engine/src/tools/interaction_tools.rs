@@ -792,6 +792,34 @@ const SYSTEM_COMMANDS: &[&str] = &[
 ];
 const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-item", "ri ", "unlink "];
 
+/// Whether a command starts a background list with `&`: a `&` outside quotes that isn't the
+/// second half of `&&` or the `&` of a `>&`/`<&` redirection.
+fn has_background(command: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut previous: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '&' => {
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    previous = Some('&');
+                    continue;
+                }
+                if !matches!(previous, Some('>') | Some('<')) {
+                    return true;
+                }
+            }
+            None => {}
+        }
+        previous = Some(c);
+    }
+    false
+}
+
 /// Whether a deleting command reaches outside the project folder (and the temp folder): any
 /// absolute, home-relative or climbing path that isn't inside them. A leading `cd` joined by `&&`
 /// moves where the paths after it land, so `cd app && rm -r ../reports/run` stays inside; other
@@ -813,7 +841,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     // a newline or a standalone `&`, the list or background part can leave the shell somewhere
     // else, so keep reading every `..` as outside there.
     let words = shell_words(command);
-    let chain = root.is_some() && !command.contains([';', '|', '\n']) && !words.iter().any(|w| w == "&");
+    let chain = root.is_some() && !command.contains([';', '|', '\n']) && !has_background(command);
     let mut cwd = root.clone();
     let mut start = true;
     let mut i = 0;
@@ -825,7 +853,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
             let Some(dir) = words.get(i + 1).map(String::as_str) else { return true };
             let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']', '{', '}']);
             let ends = words.get(i + 2).is_none_or(|next| next == "&&");
-            if !plain || !ends || dir.is_empty() || dir == "-" || matches!(dir, "&&" | "||" | ";" | "|" | "&") {
+            if !plain || !ends || dir.is_empty() || dir.starts_with('-') || dir.contains(['<', '>']) || matches!(dir, "&&" | "||" | ";" | "|" | "&") {
                 return true;
             }
             let lower = dir.to_ascii_lowercase();
@@ -1710,6 +1738,7 @@ mod tests {
             "rm -r app/../reports/run",
             "cd app && cd .. && rm -r reports/run",
             "cd app && rm -r ../reports/run && echo done",
+            "cd app && rm -r ../reports/run 2>&1",
         ] {
             assert_eq!(rm(inside), None, "{inside}");
         }
@@ -1733,8 +1762,11 @@ mod tests {
             "cd app\nrm -r ../reports/run",
             "cd app & rm -r ../reports/run",
             "cd app && echo hi & rm -r ../reports/run",
+            "cd app && echo hi& rm -r ../reports/run",
             "cd - && rm -r ../reports/run",
             "cd - && rm -r reports/run",
+            "cd -P && rm -r reports/run",
+            "cd >out && rm -r reports/run",
             "cd app extra && rm -r ../reports/run",
             "cd app extra && rm -r reports/run",
             "cd $APP && rm -r reports/run",
@@ -1744,6 +1776,15 @@ mod tests {
         ] {
             assert!(rm(outside).is_some(), "{outside}");
         }
+    }
+
+    #[test]
+    fn background_ampersands_are_told_apart() {
+        assert!(has_background("cd app && echo hi& rm x"), "an attached & backgrounds the list");
+        assert!(has_background("cd app && echo hi & rm x"), "a spaced & backgrounds the list");
+        assert!(!has_background("cd app && rm x 2>&1"), "a redirection is not background");
+        assert!(!has_background("echo '&' && cd app"), "a quoted & is text");
+        assert!(!has_background("cd app && rm x && echo y"), "&& stays in the foreground");
     }
 
     /// A link inside the project doesn't make a climbing path safe: the shell follows it before
