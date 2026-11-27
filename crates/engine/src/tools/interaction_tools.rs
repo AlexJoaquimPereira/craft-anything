@@ -847,10 +847,12 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     // a newline or a standalone `&`, the list or background part can leave the shell somewhere
     // else, so keep reading every `..` as outside there.
     let words = shell_words_spoken(command);
-    // `pushd`/`popd` and their PowerShell names move the shell too, but this check doesn't follow
-    // a directory stack; keep the stricter reading when they appear.
-    let stack = words.iter().any(|word| matches!(word.text.to_ascii_lowercase().as_str(), "pushd" | "popd" | "push-location" | "pop-location"));
-    let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command) && !stack;
+    // `pushd`/`popd`, PowerShell's location changes and `chdir` move the shell too, but this
+    // check doesn't follow a directory stack; keep the stricter reading when they appear.
+    let location = words
+        .iter()
+        .any(|word| matches!(word.text.to_ascii_lowercase().as_str(), "pushd" | "popd" | "push-location" | "pop-location" | "set-location" | "sl" | "chdir"));
+    let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command) && !location;
     let search_path = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty()) || command.to_ascii_uppercase().contains("CDPATH");
     let mut cwd = root.clone();
     let mut start = true;
@@ -1834,6 +1836,10 @@ mod tests {
             "cd app && pushd /tmp && rm -r ../reports/run",
             "cd app && pushd /tmp && popd && rm -r ../reports/run",
             "cd app && push-location /tmp && rm -r ../reports/run",
+            "cd app && set-location /tmp && rm -r ../reports/run",
+            "cd app && Set-Location /tmp && rm -r ../reports/run",
+            "cd app && sl /tmp && rm -r ../reports/run",
+            "cd app && chdir /tmp && rm -r ../reports/run",
         ] {
             assert!(rm(outside).is_some(), "{outside}");
         }
