@@ -803,6 +803,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     let real = |p: &Path| crate::workspace::real_path(p).unwrap_or_else(|| p.to_path_buf());
     let root = ws.map(|w| real(&w.root));
     let roots: Vec<PathBuf> = root.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).map(|r| real(&r)).collect();
+    let same = |a: &Path, b: &Path| inside(a, b) && inside(b, a);
     // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`
     // or a newline a failed `cd` could leave the shell somewhere else, so keep reading every
     // `..` as outside there.
@@ -860,13 +861,13 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
                 None => return true,
             };
             let Some(p) = resolve_as_opened(base, &tok) else { return true };
-            if root.as_ref().is_some_and(|r| &p == r) || !roots.iter().any(|r| inside(r, &p)) {
+            if root.as_ref().is_some_and(|r| same(r, &p)) || !roots.iter().any(|r| inside(r, &p)) {
                 return true;
             }
         } else if absolute {
             // The project folder itself is never deleted, however it is written.
             let path = Path::new(&tok);
-            if root.as_ref().is_some_and(|r| path == r.as_path()) || !roots.iter().any(|r| inside(r, path)) {
+            if root.as_ref().is_some_and(|r| same(r, path)) || !roots.iter().any(|r| inside(r, path)) {
                 return true;
             }
         }
