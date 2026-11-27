@@ -846,20 +846,23 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`,
     // a newline or a standalone `&`, the list or background part can leave the shell somewhere
     // else, so keep reading every `..` as outside there.
-    let words = shell_words(command);
-    let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command);
+    let words = shell_words_spoken(command);
+    // `pushd`/`popd` and their PowerShell names move the shell too, but this check doesn't follow
+    // a directory stack; keep the stricter reading when they appear.
+    let stack = words.iter().any(|word| matches!(word.text.to_ascii_lowercase().as_str(), "pushd" | "popd" | "push-location" | "pop-location"));
+    let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command) && !stack;
     let search_path = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty()) || command.to_ascii_uppercase().contains("CDPATH");
     let mut cwd = root.clone();
     let mut start = true;
     let mut i = 0;
     while i < words.len() {
-        let tok = words[i].as_str();
+        let tok = words[i].text.as_str();
         if chain && start && tok == "cd" {
             // A `cd` whose target isn't a plain, complete path leaves the shell somewhere
             // unknown: refuse rather than keep the old directory and check the delete there.
-            let Some(dir) = words.get(i + 1).map(String::as_str) else { return true };
+            let Some(dir) = words.get(i + 1).map(|word| word.text.as_str()) else { return true };
             let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']', '{', '}']);
-            let ends = words.get(i + 2).is_none_or(|next| next == "&&");
+            let ends = words.get(i + 2).is_none_or(|next| next.text == "&&" && !next.quoted);
             if !plain || !ends || dir.is_empty() || dir.starts_with('-') || dir.contains(['<', '>']) || matches!(dir, "&&" | "||" | ";" | "|" | "&") {
                 return true;
             }
@@ -926,18 +929,27 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
                 return true;
             }
         }
-        start = tok == "&&";
+        start = tok == "&&" && !words[i].quoted;
         i += 1;
     }
     false
 }
 
+/// A shell word and whether any part of it was quoted, so a quoted `&&` stays an argument
+/// instead of becoming a control operator.
+#[derive(Debug, Clone)]
+struct ShellWord {
+    text: String,
+    quoted: bool,
+}
+
 /// A command's arguments the way a shell reads them: quoted text (`"a b"`, `'a b'`) and an escaped
 /// space (`a\ b`) stay in one argument, so a path with spaces is checked whole. A backslash before
 /// anything else is kept as it is (Windows paths).
-fn shell_words(command: &str) -> Vec<String> {
+fn shell_words_spoken(command: &str) -> Vec<ShellWord> {
     let mut words = Vec::new();
     let mut word = String::new();
+    let mut quoted = false;
     let mut started = false;
     let mut quote: Option<char> = None;
     let mut chars = command.chars().peekable();
@@ -947,6 +959,7 @@ fn shell_words(command: &str) -> Vec<String> {
             Some(_) => word.push(c),
             None if c == '"' || c == '\'' => {
                 quote = Some(c);
+                quoted = true;
                 started = true;
             }
             None if c == '\\' && chars.peek().is_some_and(|n| n.is_whitespace()) => {
@@ -957,7 +970,8 @@ fn shell_words(command: &str) -> Vec<String> {
             }
             None if c.is_whitespace() => {
                 if started {
-                    words.push(std::mem::take(&mut word));
+                    words.push(ShellWord { text: std::mem::take(&mut word), quoted });
+                    quoted = false;
                     started = false;
                 }
             }
@@ -968,9 +982,14 @@ fn shell_words(command: &str) -> Vec<String> {
         }
     }
     if started {
-        words.push(word);
+        words.push(ShellWord { text: word, quoted });
     }
     words
+}
+
+/// The words alone, for callers that don't need to tell a quoted `&&` from an operator.
+fn shell_words(command: &str) -> Vec<String> {
+    shell_words_spoken(command).into_iter().map(|word| word.text).collect()
 }
 
 /// What the person said to an approval card.
@@ -1750,17 +1769,25 @@ mod tests {
         // land somewhere the guard must refuse.
         w.root = PathBuf::from(if cfg!(windows) { "D:/Projects/MyGame" } else { "/Users/Me/Projects/MyGame" });
         let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
-        for inside in [
+        for inside in ["rm -r app/../reports/run", "rm -r reports/100%", "export CDPATH=/tmp && cd ./app && rm -r ../reports/run"] {
+            assert_eq!(rm(inside), None, "{inside}");
+        }
+        // A shell profile can set CDPATH; a plain `cd app` is then refused, while `./app` isn't
+        // searched. Branch on what this process inherited rather than mutating the environment.
+        let cdpath = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty());
+        for chained in [
             "cd app && rm -r ../reports/run",
             "cd app && rm -r reports/run",
-            "rm -r app/../reports/run",
             "cd app && cd .. && rm -r reports/run",
             "cd app && rm -r ../reports/run && echo done",
             "cd app && rm -r ../reports/run 2>&1",
-            "rm -r reports/100%",
-            "export CDPATH=/tmp && cd ./app && rm -r ../reports/run",
+            "echo \"&&\" && cd app && rm -r ../reports/run",
         ] {
-            assert_eq!(rm(inside), None, "{inside}");
+            if cdpath {
+                assert!(rm(chained).is_some(), "{chained} (inherited CDPATH)");
+            } else {
+                assert_eq!(rm(chained), None, "{chained}");
+            }
         }
         let temp = std::env::temp_dir();
         assert_eq!(rm(&format!("cd \"{}\" && rm -r x", temp.display())), None, "the temp folder is allowed");
@@ -1802,6 +1829,11 @@ mod tests {
             "(cd app) && rm -r ../reports/run",
             "cd app && (rm -r ../reports/run)",
             "cd app && (cd .. && rm -r reports/run)",
+            "echo \"&&\" cd app && rm -r ../reports/run",
+            "cd app \"&&\" && rm -r ../reports/run",
+            "cd app && pushd /tmp && rm -r ../reports/run",
+            "cd app && pushd /tmp && popd && rm -r ../reports/run",
+            "cd app && push-location /tmp && rm -r ../reports/run",
         ] {
             assert!(rm(outside).is_some(), "{outside}");
         }
@@ -1856,7 +1888,7 @@ mod tests {
         std::os::unix::fs::symlink(real.path(), &link).unwrap();
         w.root = link;
         let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
-        assert_eq!(rm("cd app && rm -r ../reports/run"), None);
+        assert_eq!(rm("cd ./app && rm -r ../reports/run"), None);
         let root = w.root.display().to_string();
         assert_eq!(rm(&format!("rm -rf \"{root}/app/Build\"")), None, "an absolute path through the link is inside");
     }
@@ -1888,6 +1920,15 @@ mod tests {
         w.root = PathBuf::from(format!("{plain}/MyGame"));
         let beside = format!("rm -rf \"{plain}/MyGame Backup/report\"");
         assert!(never_unasked(Some(&w), "Bash", &json!({"command": beside})).is_some(), "{beside}");
+    }
+
+    #[test]
+    fn a_quoted_and_and_is_not_a_control_operator() {
+        let words = shell_words_spoken(r#"echo "&&" && cd app"#);
+        assert_eq!(
+            words.iter().map(|word| (word.text.as_str(), word.quoted)).collect::<Vec<_>>(),
+            [("echo", false), ("&&", true), ("&&", false), ("cd", false), ("app", false)]
+        );
     }
 
     #[test]
