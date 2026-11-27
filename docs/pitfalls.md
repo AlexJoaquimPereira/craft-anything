@@ -1153,7 +1153,8 @@ path rule with the folder beside the target, not only the target.
 outside, so `cd app && rm -r ../reports/<run>` (the project's own folder) was refused even though
 the shell runs it from app/. Resolve relative paths where the command would run them, but only
 after a `&&` (a failed `cd` doesn't reach the delete); keep `;`, `|` and newlines on the old,
-stricter reading, refuse the project folder itself, and follow links before comparing paths. Test
+stricter reading, refuse the project folder itself when a full or climbing path reaches it, and
+follow links before comparing paths. Test
 the project's own folder, a path past it, the root, the temp folder, a link out, and an unexpanded
 `$VAR` target.
 

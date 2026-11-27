@@ -224,8 +224,9 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
 - [x] Auto mode's delete check ignored a leading `cd`, so `cd app && rm -r ../reports/<run>`
       (inside the project) was refused as deleting outside (#2485). A `&&`-joined `cd` now moves
       where relative deletes are resolved, still refusing paths outside the project and its temp
-      folder, the project folder itself, and links that lead out. Engine regressions cover those
-      cases; the `../reports` regression fails on the old check
+      folder, the project folder itself when a full or climbing path reaches it, and links that
+      lead out. Engine regressions cover those cases; the `../reports` regression fails on the old
+      check
       — claimed: AlexJoaquimPereira, branch bugfix/2485-relative-delete-after-cd
 - [ ] **decision** First-time contributors' CI: GitHub holds their runs for approval, so their PRs
       show no `gate` run (#490 and #413 were among them). Approve each push, or

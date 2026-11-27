@@ -798,8 +798,11 @@ const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-it
 /// shell separators keep the old, stricter reading.
 fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     let temp = std::env::temp_dir();
-    let root = ws.map(|w| w.root.clone());
-    let roots: Vec<PathBuf> = root.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).collect();
+    // Follow links on both sides: macOS's temp folder is under /var, which is a link to
+    // /private/var, and a project can be opened through a link too.
+    let real = |p: &Path| crate::workspace::real_path(p).unwrap_or_else(|| p.to_path_buf());
+    let root = ws.map(|w| real(&w.root));
+    let roots: Vec<PathBuf> = root.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).map(|r| real(&r)).collect();
     // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`
     // or a newline a failed `cd` could leave the shell somewhere else, so keep reading every
     // `..` as outside there.
@@ -817,7 +820,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         {
             // `cd` with extra words fails, so only a `cd` that ends its part can move the shell.
             // A target with an expansion or glob could go anywhere, so it leaves cwd where it was.
-            let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']']);
+            let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']', '{', '}']);
             if plain && words.get(i + 2).is_none_or(|next| next == "&&") && !dir.is_empty() && dir != "-" {
                 let lower = dir.to_ascii_lowercase();
                 let home = dir.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
@@ -843,9 +846,10 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         let tok = tok.strip_prefix("/c/").or_else(|| tok.strip_prefix("/C/")).map(|r| format!("c:/{r}")).unwrap_or_else(|| tok.to_string());
         let absolute = tok.starts_with('/') || tok.get(1..3).is_some_and(|d| d == ":/" || d == ":\\");
         if tok.contains("..") {
-            // A variable or command substitution could make the path go anywhere, so keep the
-            // old refusal for it.
-            if tok.contains(['$', '`', '%']) {
+            // Outside a `&&` chain a failed `cd` doesn't stop the delete, so keep the old,
+            // stricter reading. A variable, substitution, glob or nested command could make the
+            // path go anywhere, so keep the old refusal for it too.
+            if !chain || tok.contains(['$', '`', '%', '*', '?', '[', ']', '{', '}', '&', ';', '|', '(', ')']) || tok.chars().any(char::is_whitespace) {
                 return true;
             }
             // Resolve a climbing path where the shell would run it. Deleting the project folder
@@ -859,8 +863,12 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
             if root.as_ref().is_some_and(|r| &p == r) || !roots.iter().any(|r| inside(r, &p)) {
                 return true;
             }
-        } else if absolute && !roots.iter().any(|r| inside(r, Path::new(&tok))) {
-            return true;
+        } else if absolute {
+            // The project folder itself is never deleted, however it is written.
+            let path = Path::new(&tok);
+            if root.as_ref().is_some_and(|r| path == r.as_path()) || !roots.iter().any(|r| inside(r, path)) {
+                return true;
+            }
         }
         start = tok == "&&";
         i += 1;
@@ -1686,11 +1694,20 @@ mod tests {
         // land somewhere the guard must refuse.
         w.root = PathBuf::from(if cfg!(windows) { "D:/Projects/MyGame" } else { "/Users/Me/Projects/MyGame" });
         let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
-        for inside in ["cd app && rm -r ../reports/run", "cd app && rm -r reports/run", "rm -r app/../reports/run", "cd app && cd .. && rm -r reports/run"] {
+        for inside in [
+            "cd app && rm -r ../reports/run",
+            "cd app && rm -r reports/run",
+            "rm -r app/../reports/run",
+            "cd app && cd .. && rm -r reports/run",
+            "cd app && rm -r ../reports/run && echo done",
+        ] {
             assert_eq!(rm(inside), None, "{inside}");
         }
         let temp = std::env::temp_dir();
         assert_eq!(rm(&format!("cd \"{}\" && rm -r x", temp.display())), None, "the temp folder is allowed");
+        let root = w.root.display().to_string();
+        assert!(rm(&format!("rm -rf \"{root}\"")).is_some(), "the project folder itself");
+        assert_eq!(rm(&format!("rm -rf \"{root}/app/Build\"")), None, "a child is still the project's own");
         for outside in [
             "cd app && rm -r ../../outside",
             "rm -r ../reports/run",
@@ -1698,6 +1715,16 @@ mod tests {
             "cd app && rm -r ..",
             "cd $APP && rm -r ../reports/run",
             "cd app && rm -r ../$DIR/run",
+            "cd app && bash -c 'cd .. && rm -r ../outside'",
+            "cd app; rm -r ../reports/run",
+            "cd app | rm -r ../reports/run",
+            "cd app || rm -r ../reports/run",
+            "cd app\nrm -r ../reports/run",
+            "cd app & rm -r ../reports/run",
+            "cd - && rm -r ../reports/run",
+            "cd app extra && rm -r ../reports/run",
+            "rm -r app/../reports/run; echo done",
+            "cd app && rm -r ../reports/run | tee",
         ] {
             assert!(rm(outside).is_some(), "{outside}");
         }
@@ -1712,7 +1739,22 @@ mod tests {
         std::fs::create_dir_all(w.app_dir()).unwrap();
         let outside = std::env::current_dir().unwrap();
         std::os::unix::fs::symlink(&outside, w.app_dir().join("link")).unwrap();
-        assert!(never_unasked(Some(&w), "Bash", &json!({"command": "rm -r app/link/../victim"})).is_some(), "a link's .. is beside its target");
+        for cmd in ["rm -r app/link/../victim", "cd app && rm -r */../victim"] {
+            assert!(never_unasked(Some(&w), "Bash", &json!({"command": cmd})).is_some(), "{cmd}");
+        }
+    }
+
+    /// A project opened through a link still has its own folders: both sides of the check are
+    /// compared after links are followed.
+    #[cfg(unix)]
+    #[test]
+    fn auto_mode_keeps_a_project_root_reached_through_a_link() {
+        let (_d, mut w) = ws();
+        let base = tempfile::tempdir().unwrap();
+        let link = base.path().join("linked");
+        std::os::unix::fs::symlink(std::env::current_dir().unwrap(), &link).unwrap();
+        w.root = link;
+        assert_eq!(never_unasked(Some(&w), "Bash", &json!({"command": "cd app && rm -r ../reports/run"})), None);
     }
 
     #[test]
