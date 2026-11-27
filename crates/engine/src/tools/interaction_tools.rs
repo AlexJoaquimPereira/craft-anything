@@ -809,39 +809,43 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         project_forms.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).flat_map(|r| [r.clone(), real(&r)]).collect();
     let same = |a: &Path, b: &Path| inside(a, b) && inside(b, a);
     let is_root = |p: &Path| project_forms.iter().any(|r| same(r, p));
-    // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`
-    // or a newline a failed `cd` could leave the shell somewhere else, so keep reading every
-    // `..` as outside there.
-    let chain = root.is_some() && !command.contains([';', '|', '\n']);
+    // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`,
+    // a newline or a standalone `&`, the list or background part can leave the shell somewhere
+    // else, so keep reading every `..` as outside there.
     let words = shell_words(command);
+    let chain = root.is_some() && !command.contains([';', '|', '\n']) && !words.iter().any(|w| w == "&");
     let mut cwd = root.clone();
     let mut start = true;
     let mut i = 0;
     while i < words.len() {
         let tok = words[i].as_str();
-        if chain
-            && start
-            && tok == "cd"
-            && let Some(dir) = words.get(i + 1).map(String::as_str)
-        {
-            // `cd` with extra words fails, so only a `cd` that ends its part can move the shell.
-            // A target with an expansion or glob could go anywhere, so it leaves cwd where it was.
+        if chain && start && tok == "cd" {
+            // A `cd` whose target isn't a plain, complete path leaves the shell somewhere
+            // unknown: refuse rather than keep the old directory and check the delete there.
+            let Some(dir) = words.get(i + 1).map(String::as_str) else { return true };
             let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']', '{', '}']);
-            if plain && words.get(i + 2).is_none_or(|next| next == "&&") && !dir.is_empty() && dir != "-" {
-                let lower = dir.to_ascii_lowercase();
-                let home = dir.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
-                if home {
-                    return true;
-                }
-                let Some(next) = cwd.as_ref().and_then(|c| resolve_as_opened(c, dir)) else { return true };
-                if !roots.iter().any(|r| inside(r, &next)) {
-                    return true;
-                }
-                cwd = Some(next);
-                i += 2;
-                start = false;
-                continue;
+            let ends = words.get(i + 2).is_none_or(|next| next == "&&");
+            if !plain || !ends || dir.is_empty() || dir == "-" || matches!(dir, "&&" | "||" | ";" | "|" | "&") {
+                return true;
             }
+            let lower = dir.to_ascii_lowercase();
+            let home = dir.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
+            if home {
+                return true;
+            }
+            let Some(next) = cwd.as_ref().and_then(|c| resolve_as_opened(c, dir)) else { return true };
+            // The shell's `cd` is logical: a link before `..` isn't followed. If that reading
+            // and the physical one differ, the directory is ambiguous; refuse it.
+            if dir.contains("..") && cwd.as_ref().and_then(|c| resolve(c, dir)).as_ref() != Some(&next) {
+                return true;
+            }
+            if !roots.iter().any(|r| inside(r, &next)) {
+                return true;
+            }
+            cwd = Some(next);
+            i += 2;
+            start = false;
+            continue;
         }
         let lower = tok.to_ascii_lowercase();
         let home = tok.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
@@ -865,7 +869,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
                 None if absolute => Path::new("/"),
                 None => return true,
             };
-            let Some(p) = resolve_as_opened(base, &tok) else { return true };
+            let Some(p) = resolve_as_opened(base, &tok).and_then(|p| crate::workspace::real_path(&p)) else { return true };
             if is_root(&p) || !roots.iter().any(|r| inside(r, &p)) {
                 return true;
             }
@@ -1728,8 +1732,13 @@ mod tests {
             "cd app || rm -r ../reports/run",
             "cd app\nrm -r ../reports/run",
             "cd app & rm -r ../reports/run",
+            "cd app && echo hi & rm -r ../reports/run",
             "cd - && rm -r ../reports/run",
+            "cd - && rm -r reports/run",
             "cd app extra && rm -r ../reports/run",
+            "cd app extra && rm -r reports/run",
+            "cd $APP && rm -r reports/run",
+            "cd && rm -r reports/run",
             "rm -r app/../reports/run; echo done",
             "cd app && rm -r ../reports/run | tee",
         ] {
@@ -1743,10 +1752,10 @@ mod tests {
     #[test]
     fn auto_mode_does_not_take_a_link_for_a_folder_inside_the_project() {
         let (_d, w) = ws();
-        std::fs::create_dir_all(w.app_dir()).unwrap();
-        let outside = std::env::current_dir().unwrap();
-        std::os::unix::fs::symlink(&outside, w.app_dir().join("link")).unwrap();
-        for cmd in ["rm -r app/link/../victim", "cd app && rm -r */../victim"] {
+        std::fs::create_dir_all(w.app_dir().join("sub/deeper")).unwrap();
+        std::os::unix::fs::symlink("/", w.app_dir().join("link")).unwrap();
+        std::os::unix::fs::symlink(w.app_dir().join("sub/deeper"), w.app_dir().join("inside")).unwrap();
+        for cmd in ["rm -r app/link/../victim", "rm -r app/../app/link", "cd app && rm -r */../victim", "cd app/inside/.. && rm -r reports/run"] {
             assert!(never_unasked(Some(&w), "Bash", &json!({"command": cmd})).is_some(), "{cmd}");
         }
     }
