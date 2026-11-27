@@ -792,6 +792,20 @@ const SYSTEM_COMMANDS: &[&str] = &[
 ];
 const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-item", "ri ", "unlink "];
 
+/// Whether a backslash directly precedes a quote. Bash treats it as an escaped quote, while
+/// PowerShell and cmd keep the backslash and close the string; a path like `"C:\Build\"` therefore
+/// means different things. The delete guard can't know which shell will run the text, so it
+/// refuses such a command rather than guessing.
+fn has_ambiguous_quote(command: &str) -> bool {
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(|next| *next == '"' || *next == '\'') {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether a shell token holds an unresolved variable expansion or substitution, which can't be
 /// checked as a path. A pair of `%` is cmd's `%VAR%`; a single `%` is literal.
 fn has_expansion(tok: &str) -> bool {
@@ -831,6 +845,9 @@ fn has_background(command: &str) -> bool {
 /// moves where the paths after it land, so `cd app && rm -r ../reports/run` stays inside; other
 /// shell separators keep the old, stricter reading.
 fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
+    if has_ambiguous_quote(command) {
+        return true;
+    }
     let temp = std::env::temp_dir();
     // Follow links on both sides: macOS's temp folder is under /var, which is a link to
     // /private/var, and a project can be opened through a link too. Keep both spellings, so an
@@ -1846,6 +1863,14 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_quote_escapes_are_refused() {
+        assert!(has_ambiguous_quote(r#"echo "x\""#));
+        assert!(has_ambiguous_quote(r#"echo "C:\Build\""#));
+        assert!(!has_ambiguous_quote(r#"echo "C:\Build""#));
+        assert!(!has_ambiguous_quote(r"echo C:\path"));
+    }
+
+    #[test]
     fn variable_expansions_are_told_apart() {
         assert!(has_expansion("$TARGET"));
         assert!(has_expansion("`cmd`"));
@@ -1861,6 +1886,19 @@ mod tests {
         assert!(!has_background("cd app && rm x 2>&1"), "a redirection is not background");
         assert!(!has_background("echo '&' && cd app"), "a quoted & is text");
         assert!(!has_background("cd app && rm x && echo y"), "&& stays in the foreground");
+    }
+
+    /// Bash reads `\"` as an escaped quote; PowerShell and cmd read the backslash literally. The
+    /// guard refuses the ambiguity, including a quoted Windows path ending in a backslash; the
+    /// same path without the trailing backslash still works.
+    #[test]
+    fn auto_mode_refuses_an_ambiguous_quote_escape() {
+        let (_d, w) = ws();
+        let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
+        for cmd in [r#"cd ./app && echo "x\" && rm -r ../reports/run"#, r#"cd ./app && rm -r "reports\""#] {
+            assert!(rm(cmd).is_some(), "{cmd}");
+        }
+        assert_eq!(rm(r#"cd ./app && rm -r "reports""#), None, "an ordinary quoted path still works");
     }
 
     /// A link inside the project doesn't make a climbing path safe: the shell follows it before
