@@ -793,21 +793,79 @@ const SYSTEM_COMMANDS: &[&str] = &[
 const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-item", "ri ", "unlink "];
 
 /// Whether a deleting command reaches outside the project folder (and the temp folder): any
-/// absolute, home-relative or climbing path that isn't inside them.
+/// absolute, home-relative or climbing path that isn't inside them. A leading `cd` joined by `&&`
+/// moves where the paths after it land, so `cd app && rm -r ../reports/run` stays inside; other
+/// shell separators keep the old, stricter reading.
 fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     let temp = std::env::temp_dir();
-    let roots: Vec<PathBuf> = ws.map(|w| w.root.clone()).into_iter().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).collect();
-    shell_words(command).iter().any(|tok| {
-        let tok = tok.as_str();
+    let root = ws.map(|w| w.root.clone());
+    let roots: Vec<PathBuf> = root.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).collect();
+    // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`
+    // or a newline a failed `cd` could leave the shell somewhere else, so keep reading every
+    // `..` as outside there.
+    let chain = root.is_some() && !command.contains([';', '|', '\n']);
+    let words = shell_words(command);
+    let mut cwd = root.clone();
+    let mut start = true;
+    let mut i = 0;
+    while i < words.len() {
+        let tok = words[i].as_str();
+        if chain
+            && start
+            && tok == "cd"
+            && let Some(dir) = words.get(i + 1).map(String::as_str)
+        {
+            // `cd` with extra words fails, so only a `cd` that ends its part can move the shell.
+            // A target with an expansion or glob could go anywhere, so it leaves cwd where it was.
+            let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']']);
+            if plain && words.get(i + 2).is_none_or(|next| next == "&&") && !dir.is_empty() && dir != "-" {
+                let lower = dir.to_ascii_lowercase();
+                let home = dir.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
+                if home {
+                    return true;
+                }
+                let Some(next) = cwd.as_ref().and_then(|c| resolve_as_opened(c, dir)) else { return true };
+                if !roots.iter().any(|r| inside(r, &next)) {
+                    return true;
+                }
+                cwd = Some(next);
+                i += 2;
+                start = false;
+                continue;
+            }
+        }
         let lower = tok.to_ascii_lowercase();
-        if tok.contains("..") || tok.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:") {
+        let home = tok.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
+        if home {
             return true;
         }
         // Git Bash writes C:\x as /c/x.
         let tok = tok.strip_prefix("/c/").or_else(|| tok.strip_prefix("/C/")).map(|r| format!("c:/{r}")).unwrap_or_else(|| tok.to_string());
         let absolute = tok.starts_with('/') || tok.get(1..3).is_some_and(|d| d == ":/" || d == ":\\");
-        absolute && !roots.iter().any(|r| inside(r, Path::new(&tok)))
-    })
+        if tok.contains("..") {
+            // A variable or command substitution could make the path go anywhere, so keep the
+            // old refusal for it.
+            if tok.contains(['$', '`', '%']) {
+                return true;
+            }
+            // Resolve a climbing path where the shell would run it. Deleting the project folder
+            // itself stays refused even when the path reaches it from app/.
+            let base = match cwd.as_deref() {
+                Some(cwd) => cwd,
+                None if absolute => Path::new("/"),
+                None => return true,
+            };
+            let Some(p) = resolve_as_opened(base, &tok) else { return true };
+            if root.as_ref().is_some_and(|r| &p == r) || !roots.iter().any(|r| inside(r, &p)) {
+                return true;
+            }
+        } else if absolute && !roots.iter().any(|r| inside(r, Path::new(&tok))) {
+            return true;
+        }
+        start = tok == "&&";
+        i += 1;
+    }
+    false
 }
 
 /// A command's arguments the way a shell reads them: quoted text (`"a b"`, `'a b'`) and an escaped
@@ -1616,6 +1674,45 @@ mod tests {
         assert!(rm("rm -rf $HOME/stuff".into()).is_some());
         let elsewhere = if cfg!(windows) { "D:/Projects/Other" } else { "/Users/Me/Projects/Other" };
         assert!(rm(format!("rm -rf \"{elsewhere}\"")).is_some(), "a neighbouring folder is still outside");
+    }
+
+    /// A `cd` joined by `&&` moves where a later relative delete lands, so climbing out of `app/`
+    /// into the project's own folders is allowed while the project's root and paths beyond it stay
+    /// refused (#2485).
+    #[test]
+    fn auto_mode_resolves_a_delete_after_a_leading_cd() {
+        let (_d, mut w) = ws();
+        // A path outside the temp folder, as in the other auto-mode delete tests, so `..` can
+        // land somewhere the guard must refuse.
+        w.root = PathBuf::from(if cfg!(windows) { "D:/Projects/MyGame" } else { "/Users/Me/Projects/MyGame" });
+        let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
+        for inside in ["cd app && rm -r ../reports/run", "cd app && rm -r reports/run", "rm -r app/../reports/run", "cd app && cd .. && rm -r reports/run"] {
+            assert_eq!(rm(inside), None, "{inside}");
+        }
+        let temp = std::env::temp_dir();
+        assert_eq!(rm(&format!("cd \"{}\" && rm -r x", temp.display())), None, "the temp folder is allowed");
+        for outside in [
+            "cd app && rm -r ../../outside",
+            "rm -r ../reports/run",
+            "cd .. && rm -r reports/run",
+            "cd app && rm -r ..",
+            "cd $APP && rm -r ../reports/run",
+            "cd app && rm -r ../$DIR/run",
+        ] {
+            assert!(rm(outside).is_some(), "{outside}");
+        }
+    }
+
+    /// A link inside the project doesn't make a climbing path safe: the shell follows it before
+    /// applying `..`, so `app/link/../victim` is beside the link's target, not inside app/.
+    #[cfg(unix)]
+    #[test]
+    fn auto_mode_does_not_take_a_link_for_a_folder_inside_the_project() {
+        let (_d, w) = ws();
+        std::fs::create_dir_all(w.app_dir()).unwrap();
+        let outside = std::env::current_dir().unwrap();
+        std::os::unix::fs::symlink(&outside, w.app_dir().join("link")).unwrap();
+        assert!(never_unasked(Some(&w), "Bash", &json!({"command": "rm -r app/link/../victim"})).is_some(), "a link's .. is beside its target");
     }
 
     #[test]

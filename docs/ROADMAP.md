@@ -221,9 +221,11 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       capitals in its path is refused; `auto_mode_keeps_going_but_never_does_the_dangerous_things`
       fails on a Mac for that. `real_binary_end_to_end_if_present` fails there too, expecting
       `/bin/ls` to be Linux: both fixed (#357)
-- [ ] Auto mode's delete check ignores a leading `cd`, so `cd app && rm -r ../reports/<run>`
-      (inside the project) is refused as deleting outside (#2485). Resolve delete paths against
-      the command's effective working directory, keeping outside and project-root deletes refused
+- [x] Auto mode's delete check ignored a leading `cd`, so `cd app && rm -r ../reports/<run>`
+      (inside the project) was refused as deleting outside (#2485). A `&&`-joined `cd` now moves
+      where relative deletes are resolved, still refusing paths outside the project and its temp
+      folder, the project folder itself, and links that lead out. Engine regressions cover those
+      cases; the `../reports` regression fails on the old check
       — claimed: AlexJoaquimPereira, branch bugfix/2485-relative-delete-after-cd
 - [ ] **decision** First-time contributors' CI: GitHub holds their runs for approval, so their PRs
       show no `gate` run (#490 and #413 were among them). Approve each push, or
