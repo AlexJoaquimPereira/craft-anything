@@ -799,11 +799,16 @@ const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-it
 fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     let temp = std::env::temp_dir();
     // Follow links on both sides: macOS's temp folder is under /var, which is a link to
-    // /private/var, and a project can be opened through a link too.
+    // /private/var, and a project can be opened through a link too. Keep both spellings, so an
+    // absolute path written as the person sees it still matches.
     let real = |p: &Path| crate::workspace::real_path(p).unwrap_or_else(|| p.to_path_buf());
-    let root = ws.map(|w| real(&w.root));
-    let roots: Vec<PathBuf> = root.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).map(|r| real(&r)).collect();
+    let raw_root = ws.map(|w| w.root.clone());
+    let root = raw_root.as_ref().map(|r| real(r));
+    let project_forms: Vec<PathBuf> = raw_root.iter().cloned().chain(root.iter().cloned()).collect();
+    let roots: Vec<PathBuf> =
+        project_forms.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).flat_map(|r| [r.clone(), real(&r)]).collect();
     let same = |a: &Path, b: &Path| inside(a, b) && inside(b, a);
+    let is_root = |p: &Path| project_forms.iter().any(|r| same(r, p));
     // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`
     // or a newline a failed `cd` could leave the shell somewhere else, so keep reading every
     // `..` as outside there.
@@ -861,13 +866,13 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
                 None => return true,
             };
             let Some(p) = resolve_as_opened(base, &tok) else { return true };
-            if root.as_ref().is_some_and(|r| same(r, &p)) || !roots.iter().any(|r| inside(r, &p)) {
+            if is_root(&p) || !roots.iter().any(|r| inside(r, &p)) {
                 return true;
             }
         } else if absolute {
             // The project folder itself is never deleted, however it is written.
             let path = Path::new(&tok);
-            if root.as_ref().is_some_and(|r| same(r, path)) || !roots.iter().any(|r| inside(r, path)) {
+            if is_root(path) || !roots.iter().any(|r| inside(r, path)) {
                 return true;
             }
         }
@@ -1706,6 +1711,7 @@ mod tests {
         }
         let temp = std::env::temp_dir();
         assert_eq!(rm(&format!("cd \"{}\" && rm -r x", temp.display())), None, "the temp folder is allowed");
+        assert_eq!(rm(&format!("rm -rf \"{}/x\"", temp.display())), None, "an absolute temp child is allowed");
         let root = w.root.display().to_string();
         assert!(rm(&format!("rm -rf \"{root}\"")).is_some(), "the project folder itself");
         assert_eq!(rm(&format!("rm -rf \"{root}/app/Build\"")), None, "a child is still the project's own");
@@ -1751,11 +1757,20 @@ mod tests {
     #[test]
     fn auto_mode_keeps_a_project_root_reached_through_a_link() {
         let (_d, mut w) = ws();
-        let base = tempfile::tempdir().unwrap();
+        // Both sides are outside the temp folder, so neither the as-written link nor the real
+        // folder is allowed merely for being temp; the test discriminates both spellings.
+        let build = std::env::current_dir().unwrap().join("target");
+        std::fs::create_dir_all(&build).unwrap();
+        let base = tempfile::Builder::new().prefix("linked-base-").tempdir_in(&build).unwrap();
+        let real = tempfile::Builder::new().prefix("linked-root-").tempdir_in(&build).unwrap();
+        std::fs::create_dir_all(real.path().join("app")).unwrap();
         let link = base.path().join("linked");
-        std::os::unix::fs::symlink(std::env::current_dir().unwrap(), &link).unwrap();
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
         w.root = link;
-        assert_eq!(never_unasked(Some(&w), "Bash", &json!({"command": "cd app && rm -r ../reports/run"})), None);
+        let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
+        assert_eq!(rm("cd app && rm -r ../reports/run"), None);
+        let root = w.root.display().to_string();
+        assert_eq!(rm(&format!("rm -rf \"{root}/app/Build\"")), None, "an absolute path through the link is inside");
     }
 
     #[test]
