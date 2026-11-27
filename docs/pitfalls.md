@@ -1154,9 +1154,9 @@ outside, so `cd app && rm -r ../reports/<run>` (the project's own folder) was re
 the shell runs it from app/. Resolve relative paths where the command would run them, but only
 after a `&&` (a failed `cd` doesn't reach the delete); keep `;`, `|` and newlines on the old,
 stricter reading, refuse the project folder itself when a full or climbing path reaches it, and
-follow links before comparing paths. Test
-the project's own folder, a path past it, the root, the temp folder, a link out, and an unexpanded
-`$VAR` target.
+follow links before comparing paths. Test the project's own folder, a path past it, the root, the
+temp folder, a link out, an unexpanded `$VAR`/`%VAR%` target, a `CDPATH` assignment, an attached
+`&`, and a grouped command.
 
 **A filter written for one kind of text, run on another.** The stand-in's secret scan was written for
 API answers, then also ran on recorded scripts: `this.token=t` became `[dropped]` and the scripts

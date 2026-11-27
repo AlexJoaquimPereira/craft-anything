@@ -228,10 +228,9 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       lead out. Engine regressions cover those cases; the `../reports` regression fails on the old
       check
       — claimed: AlexJoaquimPereira, branch bugfix/2485-relative-delete-after-cd
-- [ ] Auto mode's delete check still allows `rm -rf .` from the project root, doesn't follow a
-      bare `cd` (home) or `cd -`, and reads a Windows UNC path as relative. Refuse a delete of the
-      folder the shell is in when it is the project root, and treat an unknown working directory
-      and UNC paths as outside
+- [ ] Auto mode's delete check still allows `rm -rf .` from the project root and reads a Windows
+      UNC path as relative. Refuse a delete of the folder the shell is in when it is the project
+      root, and treat UNC paths as outside
 - [ ] **decision** First-time contributors' CI: GitHub holds their runs for approval, so their PRs
       show no `gate` run (#490 and #413 were among them). Approve each push, or
       change the repository's approval setting

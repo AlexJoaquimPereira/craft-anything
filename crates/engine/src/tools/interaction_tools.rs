@@ -792,6 +792,12 @@ const SYSTEM_COMMANDS: &[&str] = &[
 ];
 const DELETES: &[&str] = &["rm ", "rmdir", "rd /s", "del ", "erase ", "remove-item", "ri ", "unlink "];
 
+/// Whether a shell token holds an unresolved variable expansion or substitution, which can't be
+/// checked as a path. A pair of `%` is cmd's `%VAR%`; a single `%` is literal.
+fn has_expansion(tok: &str) -> bool {
+    tok.contains(['$', '`']) || tok.matches('%').nth(1).is_some()
+}
+
 /// Whether a command starts a background list with `&`: a `&` outside quotes that isn't the
 /// second half of `&&` or the `&` of a `>&`/`<&` redirection.
 fn has_background(command: &str) -> bool {
@@ -841,7 +847,8 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
     // a newline or a standalone `&`, the list or background part can leave the shell somewhere
     // else, so keep reading every `..` as outside there.
     let words = shell_words(command);
-    let chain = root.is_some() && !command.contains([';', '|', '\n']) && !has_background(command);
+    let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command);
+    let search_path = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty()) || command.to_ascii_uppercase().contains("CDPATH");
     let mut cwd = root.clone();
     let mut start = true;
     let mut i = 0;
@@ -861,6 +868,14 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
             if home {
                 return true;
             }
+            // A plain relative name can be redirected by the shell's CDPATH; refuse to guess
+            // where it lands. Only `.`, `..`, `./…`, `../…` and absolute paths skip the search;
+            // a name like `.config` is searched.
+            let dot = dir == "." || dir == ".." || dir.starts_with("./") || dir.starts_with("../");
+            let searched = !dir.starts_with(['/', '~']) && !dot && !dir.get(1..3).is_some_and(|d| d == ":\\" || d == ":/");
+            if search_path && searched {
+                return true;
+            }
             let Some(next) = cwd.as_ref().and_then(|c| resolve_as_opened(c, dir)) else { return true };
             // The shell's `cd` is logical: a link before `..` isn't followed. If that reading
             // and the physical one differ, the directory is ambiguous; refuse it.
@@ -878,6 +893,9 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         let lower = tok.to_ascii_lowercase();
         let home = tok.starts_with('~') || lower.contains("$home") || lower.contains("%userprofile%") || lower.contains("$env:");
         if home {
+            return true;
+        }
+        if has_expansion(tok) {
             return true;
         }
         // Git Bash writes C:\x as /c/x.
@@ -1739,6 +1757,8 @@ mod tests {
             "cd app && cd .. && rm -r reports/run",
             "cd app && rm -r ../reports/run && echo done",
             "cd app && rm -r ../reports/run 2>&1",
+            "rm -r reports/100%",
+            "export CDPATH=/tmp && cd ./app && rm -r ../reports/run",
         ] {
             assert_eq!(rm(inside), None, "{inside}");
         }
@@ -1773,9 +1793,27 @@ mod tests {
             "cd && rm -r reports/run",
             "rm -r app/../reports/run; echo done",
             "cd app && rm -r ../reports/run | tee",
+            "rm -r $TARGET",
+            "cd app && rm -r reports/$FILE",
+            "rm -r %TEMP%/x",
+            "export CDPATH=/tmp && cd app && rm -r ../reports/run",
+            "CDPATH=/tmp && cd app && rm -r ../reports/run",
+            "export CDPATH=/tmp && cd .config && rm -r ../reports/run",
+            "(cd app) && rm -r ../reports/run",
+            "cd app && (rm -r ../reports/run)",
+            "cd app && (cd .. && rm -r reports/run)",
         ] {
             assert!(rm(outside).is_some(), "{outside}");
         }
+    }
+
+    #[test]
+    fn variable_expansions_are_told_apart() {
+        assert!(has_expansion("$TARGET"));
+        assert!(has_expansion("`cmd`"));
+        assert!(has_expansion("%TEMP%/x"));
+        assert!(!has_expansion("100%"), "a lone percent is literal");
+        assert!(!has_expansion("app/../reports/run"), "a literal .. is not an expansion");
     }
 
     #[test]
