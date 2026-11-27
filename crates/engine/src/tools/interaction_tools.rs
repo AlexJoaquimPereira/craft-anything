@@ -405,7 +405,17 @@ pub(crate) fn approve(ctx: &mut Ctx<'_>, tool: &str, input: &Value) -> Result<Re
     let (auto_mode, clean_room) = (ctx.session.settings.auto_mode, ctx.session.clean_room());
     let cancel = ctx.cancel.clone();
     let mut waiting = || ctx.report(None, "Waiting for your OK…");
-    approve_with(inbox, auto_mode, clean_room, tool, input, &|| cancel.is_cancelled(), &mut waiting)
+    approve_with_from(inbox, auto_mode, clean_room, tool, input, None, &|| cancel.is_cancelled(), &mut waiting)
+}
+
+/// [`approve`] for a command that runs in `from`, rather than the project folder (a build command
+/// runs in app/). The folder is a parameter, not part of the agent's input, so it can't be spoofed.
+pub(crate) fn approve_in(ctx: &mut Ctx<'_>, tool: &str, input: &Value, from: &Path) -> Result<Result<(), String>, ToolError> {
+    let inbox = inbox(ctx);
+    let (auto_mode, clean_room) = (ctx.session.settings.auto_mode, ctx.session.clean_room());
+    let cancel = ctx.cancel.clone();
+    let mut waiting = || ctx.report(None, "Waiting for your OK…");
+    approve_with_from(inbox, auto_mode, clean_room, tool, input, Some(from), &|| cancel.is_cancelled(), &mut waiting)
 }
 
 /// [`approve`] for callers outside a tool call (a client answering an agent's permission request
@@ -421,11 +431,25 @@ pub fn approve_with(
     cancelled: &dyn Fn() -> bool,
     waiting: &mut dyn FnMut(),
 ) -> Result<Result<(), String>, ToolError> {
+    approve_with_from(inbox, auto_mode, clean_room, tool, input, None, cancelled, waiting)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approve_with_from(
+    inbox: Option<Inbox>,
+    auto_mode: bool,
+    clean_room: bool,
+    tool: &str,
+    input: &Value,
+    from: Option<&Path>,
+    cancelled: &dyn Fn() -> bool,
+    waiting: &mut dyn FnMut(),
+) -> Result<Result<(), String>, ToolError> {
     let mut ws = inbox.as_ref().and_then(workspace_of);
     if clean_room && let Some(why) = off_limits(ws.as_ref(), tool, input) {
         return Ok(Err(why));
     }
-    match outcome(ws.as_ref(), auto_mode, tool, input) {
+    match outcome_from(ws.as_ref(), auto_mode, tool, input, from) {
         Outcome::Allow => Ok(Ok(())),
         Outcome::Refuse(why) => Ok(Err(why)),
         Outcome::RefuseKind { why, kind } => {
@@ -470,7 +494,7 @@ enum Outcome {
 
 /// The policy ([`decide`]), then what the person always allowed, then the project's choice for
 /// the action's kind, or Auto mode's default for it.
-fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -> Outcome {
+fn outcome_from(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value, from: Option<&Path>) -> Outcome {
     let (title, action) = match decide(ws, tool, input) {
         Decision::Allow => return Outcome::Allow,
         Decision::Deny(m) => return Outcome::Refuse(m),
@@ -482,7 +506,7 @@ fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -
         let chosen = ws.and_then(|w| w.manifest.approvals.get(&kind).copied());
         (kind, chosen, chosen.unwrap_or_else(|| kind.default_in(auto_mode)))
     };
-    let kinds = kinds_of(ws, tool, input);
+    let kinds = kinds_of_from(ws, tool, input, from);
     let Some((kind, chosen, approval)) = kinds.iter().map(|k| gets(*k)).fold(None, |best: Option<(ActionKind, Option<Approval>, Approval)>, next| match best {
         Some(b) if b.2.strictness() >= next.2.strictness() => Some(b),
         _ => Some(next),
@@ -499,6 +523,13 @@ fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -
         Approval::Refuse => Outcome::RefuseKind { why: refusal(kind, chosen.is_some()), kind },
         Approval::Ask => Outcome::Ask { title, remember: if remembers_actions(kind) { Remember::Action(action) } else { Remember::Kind(kind) } },
     }
+}
+
+/// The policy from the project folder (the agent's usual starting point), for tests and callers
+/// that don't know a different folder.
+#[cfg(test)]
+fn outcome(ws: Option<&Workspace>, auto_mode: bool, tool: &str, input: &Value) -> Outcome {
+    outcome_from(ws, auto_mode, tool, input, None)
 }
 
 /// What a Clean room builder is told when it reaches for the original.
@@ -598,12 +629,16 @@ pub fn kind_of(ws: Option<&Workspace>, tool: &str, input: &Value) -> ActionKind 
 /// a system change, `git push && craft-anything-cli …`), and each of their choices applies. The
 /// first is [`kind_of`]'s.
 pub fn kinds_of(ws: Option<&Workspace>, tool: &str, input: &Value) -> Vec<ActionKind> {
+    kinds_of_from(ws, tool, input, None)
+}
+
+/// [`kinds_of`], with the folder the shell will run in when the caller knows it (a build command
+/// runs in app/, not the project folder). It is a parameter, not part of the agent's input.
+fn kinds_of_from(ws: Option<&Workspace>, tool: &str, input: &Value, from: Option<&Path>) -> Vec<ActionKind> {
     if !matches!(tool, "Bash" | "PowerShell") {
         return vec![kind_of(ws, tool, input)];
     }
     let command = input.get("command").and_then(Value::as_str).unwrap_or_default();
-    // A build command runs in app/, not the project folder; its approval says where.
-    let from = input.get("cwd").and_then(Value::as_str).filter(|p| !p.is_empty()).map(PathBuf::from);
     let c = command.to_ascii_lowercase();
     let mut kinds = Vec::new();
     if publishes(&c) {
@@ -613,7 +648,7 @@ pub fn kinds_of(ws: Option<&Workspace>, tool: &str, input: &Value) -> Vec<Action
         kinds.push(ActionKind::System);
     }
     // Paths keep their case: on a Mac or Linux `/Users/x` isn't `/users/x`.
-    if DELETES.iter().any(|k| c.contains(k)) && deletes_outside(command, ws, from.as_deref()) {
+    if DELETES.iter().any(|k| c.contains(k)) && deletes_outside(command, ws, from) {
         kinds.push(ActionKind::DeleteOutside);
     }
     if kinds.is_empty() {
@@ -1923,6 +1958,18 @@ mod tests {
             assert!(rm(cmd).is_some(), "{cmd}");
         }
         assert_eq!(rm(r#"cd ./app && rm -r "reports""#), None, "an ordinary quoted path still works");
+    }
+
+    /// The starting folder is a parameter on the private approval path, not an agent input field;
+    /// an extra `cwd` in the agent's JSON must not move the guard.
+    #[test]
+    fn an_agent_cannot_move_the_guard_with_a_cwd_field() {
+        let (_d, mut w) = ws();
+        // Outside the temp folder, so `../reports` is outside from the project root but inside
+        // from app/.
+        w.root = PathBuf::from(if cfg!(windows) { "D:/Projects/MyGame" } else { "/Users/Me/Projects/MyGame" });
+        let input = json!({"command": "rm -r ../reports/run", "cwd": w.app_dir().display().to_string()});
+        assert_eq!(kind_of(Some(&w), "Bash", &input), ActionKind::DeleteOutside);
     }
 
     /// On Unix a backslash escapes the next character, so a `cd` target containing one can't be

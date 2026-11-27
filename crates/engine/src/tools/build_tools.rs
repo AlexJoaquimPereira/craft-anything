@@ -6,7 +6,7 @@
 //! dev servers are refused, anything else asks the person (or goes ahead in Auto mode, except
 //! what's never done unasked). Ids follow docs/tool-ids.md.
 
-use super::interaction_tools::{approve, inbox, inside, really_inside, resolve, workspace_of};
+use super::interaction_tools::{approve, approve_in, command_deletes_outside, inbox, inside, really_inside, resolve, workspace_of};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::workspace::Workspace;
 use craft_anything_evidence::{ErrorCode, ToolError};
@@ -521,10 +521,9 @@ fn build_command_run(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
     let app = ws.app_dir();
     std::fs::create_dir_all(&app).map_err(|e| ToolError::io(app.display(), e))?;
     // Commands here run in app/, so approval and the recheck must resolve paths from there.
-    let approval = json!({"command": p.command, "cwd": app.display().to_string()});
-    let deletes_before = crate::tools::interaction_tools::command_deletes_outside(&p.command, &ws, &app);
-    approve(ctx, "Bash", &approval)?.map_err(refused)?;
-    if !deletes_before && crate::tools::interaction_tools::command_deletes_outside(&p.command, &ws, &app) {
+    let deletes_before = command_deletes_outside(&p.command, &ws, &app);
+    approve_in(ctx, "Bash", &json!({"command": p.command}), &app)?.map_err(refused)?;
+    if !deletes_before && command_deletes_outside(&p.command, &ws, &app) {
         return Err(ToolError::invalid("This command's delete now reaches outside the project; check the path and run it again."));
     }
     let inner = app.join("app");
