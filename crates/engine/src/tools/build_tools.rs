@@ -518,9 +518,15 @@ fn build_file_edit(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolE
 fn build_command_run(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: CommandParams = parse_params(params)?;
     let ws = workspace(ctx)?;
-    approve(ctx, "Bash", &json!({"command": p.command}))?.map_err(refused)?;
     let app = ws.app_dir();
     std::fs::create_dir_all(&app).map_err(|e| ToolError::io(app.display(), e))?;
+    // Commands here run in app/, so approval and the recheck must resolve paths from there.
+    let approval = json!({"command": p.command, "cwd": app.display().to_string()});
+    let deletes_before = crate::tools::interaction_tools::command_deletes_outside(&p.command, &ws, &app);
+    approve(ctx, "Bash", &approval)?.map_err(refused)?;
+    if !deletes_before && crate::tools::interaction_tools::command_deletes_outside(&p.command, &ws, &app) {
+        return Err(ToolError::invalid("This command's delete now reaches outside the project; check the path and run it again."));
+    }
     let inner = app.join("app");
     let had_inner = inner.is_dir();
     let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
@@ -876,6 +882,18 @@ mod tests {
         let (_d, _ws, e) = building();
         let routes = call(&e, "build_command_run", json!({"command": "mkdir app"})).unwrap();
         assert_eq!(routes.get("note"), None, "{routes}");
+    }
+
+    /// Commands run in app/, so a climb into the project's own folder is inside, not outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_command_can_remove_its_own_folder_above_app() {
+        let (_d, ws, e) = building();
+        std::fs::create_dir_all(ws.root.join("reports")).unwrap();
+        std::fs::write(ws.root.join("reports/run"), "x").unwrap();
+        let r = call(&e, "build_command_run", json!({"command": "rm -r ../reports/run"})).unwrap();
+        assert_eq!(r["succeeded"].as_bool(), Some(true), "{r}");
+        assert!(!ws.root.join("reports/run").exists());
     }
 
     #[test]

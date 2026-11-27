@@ -602,6 +602,8 @@ pub fn kinds_of(ws: Option<&Workspace>, tool: &str, input: &Value) -> Vec<Action
         return vec![kind_of(ws, tool, input)];
     }
     let command = input.get("command").and_then(Value::as_str).unwrap_or_default();
+    // A build command runs in app/, not the project folder; its approval says where.
+    let from = input.get("cwd").and_then(Value::as_str).filter(|p| !p.is_empty()).map(PathBuf::from);
     let c = command.to_ascii_lowercase();
     let mut kinds = Vec::new();
     if publishes(&c) {
@@ -611,7 +613,7 @@ pub fn kinds_of(ws: Option<&Workspace>, tool: &str, input: &Value) -> Vec<Action
         kinds.push(ActionKind::System);
     }
     // Paths keep their case: on a Mac or Linux `/Users/x` isn't `/users/x`.
-    if DELETES.iter().any(|k| c.contains(k)) && deletes_outside(command, ws) {
+    if DELETES.iter().any(|k| c.contains(k)) && deletes_outside(command, ws, from.as_deref()) {
         kinds.push(ActionKind::DeleteOutside);
     }
     if kinds.is_empty() {
@@ -844,7 +846,7 @@ fn has_background(command: &str) -> bool {
 /// absolute, home-relative or climbing path that isn't inside them. A leading `cd` joined by `&&`
 /// moves where the paths after it land, so `cd app && rm -r ../reports/run` stays inside; other
 /// shell separators keep the old, stricter reading.
-fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
+fn deletes_outside(command: &str, ws: Option<&Workspace>, from: Option<&Path>) -> bool {
     if has_ambiguous_quote(command) {
         return true;
     }
@@ -860,6 +862,10 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         project_forms.iter().cloned().chain([temp, PathBuf::from("/tmp"), PathBuf::from("c:/tmp")]).flat_map(|r| [r.clone(), real(&r)]).collect();
     let same = |a: &Path, b: &Path| inside(a, b) && inside(b, a);
     let is_root = |p: &Path| project_forms.iter().any(|r| same(r, p));
+    let from = from.map(real);
+    if from.as_ref().is_some_and(|p| !roots.iter().any(|r| inside(r, p))) {
+        return true;
+    }
     // Only a chain of `&&` guarantees the `cd` succeeded before the delete runs. With `;`, `|`,
     // a newline or a standalone `&`, the list or background part can leave the shell somewhere
     // else, so keep reading every `..` as outside there.
@@ -871,7 +877,7 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         .any(|word| matches!(word.text.to_ascii_lowercase().as_str(), "pushd" | "popd" | "push-location" | "pop-location" | "set-location" | "sl" | "chdir"));
     let chain = root.is_some() && !command.contains([';', '|', '\n', '(', ')']) && !has_background(command) && !location;
     let search_path = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty()) || command.to_ascii_uppercase().contains("CDPATH");
-    let mut cwd = root.clone();
+    let mut cwd = from.or_else(|| root.clone());
     let mut start = true;
     let mut i = 0;
     while i < words.len() {
@@ -882,7 +888,18 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
             let Some(dir) = words.get(i + 1).map(|word| word.text.as_str()) else { return true };
             let plain = !dir.contains(['$', '%', '`', '*', '?', '[', ']', '{', '}']);
             let ends = words.get(i + 2).is_none_or(|next| next.text == "&&" && !next.quoted);
-            if !plain || !ends || dir.is_empty() || dir.starts_with('-') || dir.contains(['<', '>']) || matches!(dir, "&&" | "||" | ";" | "|" | "&") {
+            if !plain
+                || !ends
+                || dir.is_empty()
+                || dir.starts_with('-')
+                || dir.contains(['<', '>', '&', ';', '|', '(', ')'])
+                || matches!(dir, "&&" | "||" | ";" | "|" | "&")
+            {
+                return true;
+            }
+            // On Unix a backslash escapes the next character; a path written with one can't be
+            // compared lexically with what the shell opens. Windows uses it as a separator.
+            if cfg!(not(windows)) && dir.contains('\\') {
                 return true;
             }
             let lower = dir.to_ascii_lowercase();
@@ -952,6 +969,12 @@ fn deletes_outside(command: &str, ws: Option<&Workspace>) -> bool {
         i += 1;
     }
     false
+}
+
+/// Whether a command's delete operands reach outside, from the folder it will run in. Used again
+/// immediately before a build command runs.
+pub(crate) fn command_deletes_outside(command: &str, ws: &Workspace, from: &Path) -> bool {
+    deletes_outside(command, Some(ws), Some(from))
 }
 
 /// A shell word and whether any part of it was quoted, so a quoted `&&` stays an argument
@@ -1850,6 +1873,7 @@ mod tests {
             "cd app && (cd .. && rm -r reports/run)",
             "echo \"&&\" cd app && rm -r ../reports/run",
             "cd app \"&&\" && rm -r ../reports/run",
+            "cd app&&rm -r ../reports/run",
             "cd app && pushd /tmp && rm -r ../reports/run",
             "cd app && pushd /tmp && popd && rm -r ../reports/run",
             "cd app && push-location /tmp && rm -r ../reports/run",
@@ -1901,6 +1925,17 @@ mod tests {
         assert_eq!(rm(r#"cd ./app && rm -r "reports""#), None, "an ordinary quoted path still works");
     }
 
+    /// On Unix a backslash escapes the next character, so a `cd` target containing one can't be
+    /// compared lexically with the directory the shell opens; it is refused.
+    #[cfg(unix)]
+    #[test]
+    fn auto_mode_refuses_an_escaped_unix_cd_target() {
+        let (_d, w) = ws();
+        let rm = |cmd: &str| never_unasked(Some(&w), "Bash", &json!({"command": cmd}));
+        assert!(rm(r"cd app\/sub && rm -r ../reports/run").is_some(), "an escaped slash is ambiguous");
+        assert_eq!(rm("cd ./app && rm -r ../reports/run"), None, "an ordinary ./ chain still works");
+    }
+
     /// A link inside the project doesn't make a climbing path safe: the shell follows it before
     /// applying `..`, so `app/link/../victim` is beside the link's target, not inside app/.
     #[cfg(unix)]
@@ -1935,6 +1970,19 @@ mod tests {
         assert_eq!(rm("cd ./app && rm -r ../reports/run"), None);
         let root = w.root.display().to_string();
         assert_eq!(rm(&format!("rm -rf \"{root}/app/Build\"")), None, "an absolute path through the link is inside");
+    }
+
+    /// A recheck before execution sees a link created after approval and refuses the climb.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_created_after_approval_is_caught_when_rechecking() {
+        let (_d, w) = ws();
+        std::fs::create_dir_all(w.app_dir()).unwrap();
+        let link = w.root.join("link");
+        std::os::unix::fs::symlink(std::env::current_dir().unwrap(), &link).unwrap();
+        assert!(command_deletes_outside("rm -r ../link/../reports", &w, &w.app_dir()), "the link now leads outside");
+        std::fs::remove_file(&link).unwrap();
+        assert!(!command_deletes_outside("rm -r ../link/../reports", &w, &w.app_dir()), "without the link it stays inside");
     }
 
     #[test]
