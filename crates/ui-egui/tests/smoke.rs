@@ -3927,15 +3927,17 @@ fn a_tall_start_dialog_scrolls_at_1366_by_768() {
         a
     });
     h.run_steps(5);
-    let viewport = h.ctx.content_rect();
     h.get_by_label("Build with Agent 9").scroll_to_me();
     h.run_steps(3);
+    // The dialog's own viewport, not the window: an agent clipped by the scroll area must fail.
+    let viewport = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("craft-modal-clip"))).expect("the dialog viewport was recorded");
     let agent = h.get_by_label("Build with Agent 9").rect();
-    assert!(viewport.contains_rect(agent), "the last agent at {agent:?} is outside {viewport:?}");
+    assert!(viewport.contains_rect(agent), "the last agent at {agent:?} is outside the dialog viewport {viewport:?}");
     h.get_by_label("Cancel").scroll_to_me();
     h.run_steps(3);
+    let viewport = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("craft-modal-clip"))).expect("the dialog viewport was recorded");
     let cancel = h.get_by_label("Cancel").rect();
-    assert!(viewport.contains_rect(cancel), "Cancel at {cancel:?} is outside {viewport:?}");
+    assert!(viewport.contains_rect(cancel), "Cancel at {cancel:?} is outside the dialog viewport {viewport:?}");
     h.get_by_label("Cancel").click();
     h.run_steps(2);
     assert_eq!(h.state().state.modal, None);
